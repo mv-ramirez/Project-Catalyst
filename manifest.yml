@@ -1,0 +1,49 @@
+---
+applications:
+  - name: sharepoint-rag-api
+    memory: 1536M
+    disk_quota: 4096M
+    instances: 1
+    buildpacks:
+      - python_buildpack
+    command: python api.py
+    health-check-type: http
+    health-check-http-endpoint: /health
+    health-check-invocation-timeout: 120
+    timeout: 180
+    env:
+      HOSTNAME: z0y8z.sharepoint.com
+      SITE_PATH: /sites/BTP-CatalystPlatform
+      DOWNLOAD_PATH: /tmp
+      SENTENCE_TRANSFORMERS_HOME: /tmp/models
+      HF_HUB_DISABLE_SYMLINKS_WARNING: "1"
+      HF_HUB_DISABLE_IMPLICIT_TOKEN: "1"
+      TOKENIZERS_PARALLELISM: "false"
+    services:
+      - btp-catalyst-platform-destination   # BTP Destination Service
+      - btp-catalyst-platform-db            # HANA HDI container
+      
+      
+
+# Deployed modules:
+#   api.py  — SharePoint RAG API (FastAPI + uvicorn)
+#   db.py   — SAP HANA database engine (ingest, query, CRUD via /db/* routes)
+#
+# Service bindings inject VCAP_SERVICES automatically on cf push:
+#   HANA Cloud service      → db credentials (host, port, user, password, schema)
+#   Destination Service     → used to fetch MS Graph credentials from destination 'btp-cp_ms_graph'
+#
+# To find service instance names, run: cf services
+# Then update the two services: values above and run: cf push
+#
+# The destination 'btp-cp_ms_graph' must be configured in BTP Cockpit:
+#   Type:           HTTP
+#   URL:            https://graph.microsoft.com
+#   Authentication: OAuth2ClientCredentials
+#   Client ID:      <your Azure AD app client ID>
+#   Client Secret:  <your Azure AD app client secret>
+#   Token Service URL: https://login.microsoftonline.com/<tenant-id>/oauth2/v2.0/token
+#   Scope:          https://graph.microsoft.com/.default
+#
+# SharePoint credentials are stored in the BTP Destination — do NOT use cf set-env for them.
+# Then restage: cf restage sharepoint-rag-api
