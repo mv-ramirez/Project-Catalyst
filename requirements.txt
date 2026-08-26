@@ -1,0 +1,25 @@
+# ── API framework (api.py) ────────────────────────────────────────────────────
+fastapi>=0.110.0
+uvicorn[standard]>=0.27.0
+python-dotenv>=1.0.0
+
+# ── HTTP / SharePoint (api.py) ────────────────────────────────────────────────
+requests>=2.31.0
+urllib3>=2.0.0
+
+# ── Document text extraction (api.py) ────────────────────────────────────────
+python-docx>=1.1.0
+openpyxl>=3.1.2
+pdfplumber>=0.10.0
+python-pptx>=0.6.23
+xlrd==1.2.0
+olefile>=0.46
+
+# ── Embeddings / RAG (api.py) ─────────────────────────────────────────────────
+# CPU-only torch — avoids the ~2GB CUDA build which exhausts CF staging disk
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch>=2.1.0
+sentence-transformers>=2.7.0
+
+# ── SAP HANA database (db.py) ─────────────────────────────────────────────────
+hdbcli>=2.19.0
