@@ -12,6 +12,8 @@ applications:
     health-check-invocation-timeout: 120
     timeout: 180
     env:
+      ENABLE_DESTRUCTIVE: "false"
+      ENABLE_DEBUG: "false"
       HOSTNAME: z0y8z.sharepoint.com
       SITE_PATH: /sites/BTP-CatalystPlatform
       DOWNLOAD_PATH: /tmp
@@ -22,12 +24,14 @@ applications:
     services:
       - btp-catalyst-platform-destination   # BTP Destination Service
       - btp-catalyst-platform-db            # HANA HDI container
+      - btp-catalyst-platform-objectstore   # SAP BTP Object Store (S3)
       
       
 
 # Deployed modules:
 #   api.py  — SharePoint RAG API (FastAPI + uvicorn)
 #   db.py   — SAP HANA database engine (ingest, query, CRUD via /db/* routes)
+#   s3.py   -- S3/Object Store client (list, upload, download, delete, presigned URLs)
 #
 # Service bindings inject VCAP_SERVICES automatically on cf push:
 #   HANA Cloud service      → db credentials (host, port, user, password, schema)
