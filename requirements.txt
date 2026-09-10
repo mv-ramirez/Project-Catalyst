@@ -22,4 +22,11 @@ torch>=2.1.0
 sentence-transformers>=2.7.0
 
 # ── SAP HANA database (db.py) ─────────────────────────────────────────────────
-hdbcli>=2.19.0
+hdbcli>=2.28.17
+
+# ── S3 / Object Store (s3.py) ─────────────────────────────────────────────────
+boto3>=1.34.0
+
+# ── Additional document formats (api.py) ──────────────────────────────────────
+striprtf>=0.0.26
+extract-msg>=0.28.0
