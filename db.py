@@ -153,23 +153,26 @@ def create_tables() -> dict:
         tables = {
             "CATALYSTPLATFORM_BRAIN_SP_FILES": f"""
                 CREATE TABLE {_t("CATALYSTPLATFORM_BRAIN_SP_FILES")} (
-                    item_id       NVARCHAR(500) PRIMARY KEY,
-                    filename      NVARCHAR(500),
-                    file_type     NVARCHAR(200),
-                    extension     NVARCHAR(20),
-                    size_text     NVARCHAR(50),
-                    size_bytes    BIGINT,
-                    web_url       NVARCHAR(1000),
-                    doc_path      NVARCHAR(1000),
-                    last_modified NVARCHAR(50),
-                    created_date  NVARCHAR(50),
-                    created_by    NVARCHAR(500),
-                    modified_by   NVARCHAR(500),
-                    shared        NVARCHAR(100),
-                    version_count INT,
-                    source        NVARCHAR(20) DEFAULT 'sharepoint',
-                    indexed_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    insert_dt     TIMESTAMP
+                    item_id          NVARCHAR(500) PRIMARY KEY,
+                    filename         NVARCHAR(500),
+                    file_type        NVARCHAR(200),
+                    extension        NVARCHAR(20),
+                    size_text        NVARCHAR(50),
+                    size_bytes       BIGINT,
+                    web_url          NVARCHAR(1000),
+                    doc_path         NVARCHAR(1000),
+                    last_modified    NVARCHAR(50),
+                    created_date     NVARCHAR(50),
+                    created_by       NVARCHAR(500),
+                    modified_by      NVARCHAR(500),
+                    shared           NVARCHAR(100),
+                    version_count    INT,
+                    source           NVARCHAR(20) DEFAULT 'sharepoint',
+                    layer            NVARCHAR(20),
+                    layer_category   NVARCHAR(100),
+                    deliverable_code NVARCHAR(20),
+                    indexed_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    insert_dt        TIMESTAMP
                 )
             """,
             "CATALYSTPLATFORM_BRAIN_TEXT_CHUNKS": f"""
@@ -178,7 +181,7 @@ def create_tables() -> dict:
                     chunk_id   INT,
                     chunk_data NCLOB,
                     filename   NVARCHAR(500),
-                    source     NVARCHAR(20) DEFAULT 'sharepoint',
+                    source     NVARCHAR(20),
                     insert_dt  TIMESTAMP,
                     PRIMARY KEY (item_id, chunk_id)
                 )
@@ -189,7 +192,7 @@ def create_tables() -> dict:
                     chunk_id    INT,
                     vector_data REAL_VECTOR(384),
                     filename    NVARCHAR(500),
-                    source      NVARCHAR(20) DEFAULT 'sharepoint',
+                    source      NVARCHAR(20),
                     insert_dt   TIMESTAMP,
                     PRIMARY KEY (item_id, chunk_id)
                 )
@@ -294,8 +297,9 @@ def ingest(chunks_data: list, vectors_data: list, items: list, source: str = "sh
                     cur.execute(
                         f"UPSERT {_t('CATALYSTPLATFORM_BRAIN_SP_FILES')} "
                         "(item_id, filename, file_type, extension, size_text, size_bytes, web_url, doc_path, "
-                        " last_modified, created_date, created_by, modified_by, shared, version_count, source, insert_dt) "
-                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) WITH PRIMARY KEY",
+                        " last_modified, created_date, created_by, modified_by, shared, version_count, source, "
+                        " layer, layer_category, deliverable_code, insert_dt) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) WITH PRIMARY KEY",
                         (
                             item_id,
                             item.get("name", ""),
@@ -312,6 +316,9 @@ def ingest(chunks_data: list, vectors_data: list, items: list, source: str = "sh
                             item.get("shared", ""),
                             item.get("version_count"),
                             source,
+                            item.get("layer"),
+                            item.get("layer_category"),
+                            item.get("deliverable_code"),
                             now,
                         )
                     )
@@ -432,6 +439,43 @@ def ingest_file_registry(items: list, source: str = "sharepoint") -> dict:
     finally:
         cur.close()
 
+
+
+def ingest_versions(versions: list) -> dict:
+    """Upsert SharePoint version records into BRAIN_SP_FILES_VERSIONS."""
+    if not versions:
+        return {"sp_files_versions": 0}
+    conn = _connect()
+    cur  = conn.cursor()
+    now  = datetime.utcnow()
+    try:
+        for v in versions:
+            cur.execute(
+                f"UPSERT {_t('CATALYSTPLATFORM_BRAIN_SP_FILES_VERSIONS')} "
+                "(item_id, version_id, file_size_text, size_bytes, last_modified_dt, "
+                " lastmodified_by, download_url, version_count, filename, insert_dt) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) WITH PRIMARY KEY",
+                (
+                    v.get("item_id", ""),
+                    v.get("version_id", ""),
+                    v.get("fileSize"),
+                    v.get("size"),
+                    v.get("lastModifiedDateTime"),
+                    v.get("lastmodified_by"),
+                    v.get("download_url"),
+                    v.get("version_count"),
+                    v.get("filename"),
+                    now,
+                )
+            )
+        conn.commit()
+        log.info(f"Ingested {len(versions)} rows into BRAIN_SP_FILES_VERSIONS")
+        return {"sp_files_versions": len(versions)}
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        cur.close()
 
 
 # ── Backup ────────────────────────────────────────────────────────────────────
@@ -629,9 +673,12 @@ def migrate_tables() -> dict:
 
     # Columns to add: (table, column, definition)
     migrations = [
-        ("CATALYSTPLATFORM_BRAIN_SP_FILES",       "source", "NVARCHAR(20) DEFAULT 'sharepoint'"),
-        ("CATALYSTPLATFORM_BRAIN_TEXT_CHUNKS",  "source", "NVARCHAR(20) DEFAULT 'sharepoint'"),
-        ("CATALYSTPLATFORM_BRAIN_VECTORS",      "source", "NVARCHAR(20) DEFAULT 'sharepoint'"),
+        ("CATALYSTPLATFORM_BRAIN_SP_FILES",    "source",           "NVARCHAR(20) DEFAULT 'sharepoint'"),
+        ("CATALYSTPLATFORM_BRAIN_SP_FILES",    "layer",            "NVARCHAR(20)"),
+        ("CATALYSTPLATFORM_BRAIN_SP_FILES",    "layer_category",   "NVARCHAR(100)"),
+        ("CATALYSTPLATFORM_BRAIN_SP_FILES",    "deliverable_code", "NVARCHAR(20)"),
+        ("CATALYSTPLATFORM_BRAIN_TEXT_CHUNKS", "source",           "NVARCHAR(20)"),
+        ("CATALYSTPLATFORM_BRAIN_VECTORS",     "source",           "NVARCHAR(20)"),
     ]
 
     try:
