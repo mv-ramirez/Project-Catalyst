@@ -30,6 +30,15 @@ import s3
 
 load_dotenv()
 
+# ── Deliverable lookup ────────────────────────────────────────────────────────
+_DELIVERABLES_PATH = os.path.join(os.path.dirname(__file__), "deliverables.json")
+with open(_DELIVERABLES_PATH, encoding="utf-8") as _f:
+    _DELIVERABLE_LOOKUP: dict[str, str] = {
+        d["short"].strip().lower(): d["rowId"]
+        for d in json.load(_f)
+    }
+
+
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
@@ -284,6 +293,12 @@ def _flatten_item(item: dict) -> dict:
     dPath       = "/".join(quote(seg, safe="") for seg in f"{folder_path}/{item_name}".split("/"))
     basePath    = f"{GRAPH_BASE}{path[0]}:{dPath}:/content"
 
+    fp_parts         = folder_path.split("/")
+    layer            = fp_parts[2] if len(fp_parts) > 2 else None
+    layer_category   = fp_parts[3] if len(fp_parts) > 3 else None
+    _del_segment     = fp_parts[4].strip().lower() if len(fp_parts) > 4 else ""
+    deliverable_code = _DELIVERABLE_LOOKUP.get(_del_segment)
+
     return {
         "id":                 item_id,
         "name":               item_name,
@@ -304,6 +319,9 @@ def _flatten_item(item: dict) -> dict:
         "BaseURL":            basePath,
         "shared":             item.get("shared", {}).get("scope", ""),
         "quick_xor_hash":     item.get("file", {}).get("hashes", {}).get("quickXorHash"),
+        "layer":              layer,
+        "layer_category":     layer_category,
+        "deliverable_code":   deliverable_code,
     }
 
 
@@ -384,6 +402,7 @@ def _get_all_files(src: str, use_delta: bool = True) -> list:
     log.info(f"Getting all files from {endpoint}")
     url    = f"{GRAPH_BASE}/drives/{drive_id}{endpoint}"
     result = []
+    src_lower = src.lower()
     while url:
         resp = requests.get(url, headers=_headers(), timeout=(15, 60))
         resp.raise_for_status()
@@ -391,8 +410,13 @@ def _get_all_files(src: str, use_delta: bool = True) -> list:
         resp.close()
         for f in data.get("value", []):
             flat = _flatten_item(f)
-            if flat["type"] != "Folder":
-                result.append(flat)
+            if flat["type"] == "Folder":
+                continue
+            raw_path    = f.get("parentReference", {}).get("path", "")
+            folder_path = raw_path.split(":", 1)[-1] if ":" in raw_path else raw_path
+            if not folder_path.lower().startswith(src_lower):
+                continue
+            result.append(flat)
         url = data.get("@odata.nextLink")
     return result
 
@@ -2394,17 +2418,20 @@ and stores everything in **SAP HANA Cloud** for retrieval-augmented generation (
 ### Architecture
 
 ```
-SharePoint (MS Graph API)
-        │
-        ▼
-   api.py  ──► text extraction (docx, xlsx, pdf, pptx, csv, …)
-        │      semantic chunking (512-token windows)
-        │      embedding (all-MiniLM-L6-v2, 384-dim)
-        ▼
-   db.py   ──► SAP HANA Cloud  (BRAIN_SP_FILES · BRAIN_TEXT_CHUNKS · BRAIN_VECTORS · BRAIN_SP_FILES_VERSIONS · BRAIN_SP_FILES_CHUNK)
-        │
-        ▼
-   s3.py   ──► SAP BTP Object Store / S3  (run artifacts: HTML reports, logs)
+SharePoint (MS Graph API)  ──┐
+SAP BTP Object Store / S3  ──┤
+Local /tmp filesystem      ──┘
+                              │
+                              ▼
+                         api.py  ──► text extraction (docx, xlsx, pdf, pptx, csv, …)
+                              │      semantic chunking (512-token windows)
+                              │      embedding (all-MiniLM-L6-v2, 384-dim)
+                              ▼
+                         db.py   ──► SAP HANA Cloud
+                              │       BRAIN_SP_FILES · BRAIN_TEXT_CHUNKS · BRAIN_VECTORS
+                              │       BRAIN_SP_FILES_VERSIONS · BRAIN_SP_FILES_CHUNK
+                              ▼
+                         s3.py   ──► SAP BTP Object Store / S3  (run artifacts: HTML reports, logs)
 ```
 
 ---
@@ -2437,6 +2464,20 @@ downloaded and re-vectorized. The `skipped_unchanged` field in every response sh
 
 ---
 
+### SharePoint Version Tracking
+
+All vectorize and pipeline endpoints now upsert full version history into `BRAIN_SP_FILES_VERSIONS`
+(primary key: `item_id` + `version_id`). Fields stored: `version_id`, `file_size_text`,
+`size_bytes`, `last_modified_dt`, `lastmodified_by`, `download_url`, `version_count`, `filename`.
+The `db_ingest.sp_files_versions` field in every response shows how many records were upserted.
+
+> **Delta API scoping** — when `use_delta=true`, the first Graph API call with no stored token
+> returns every item in the drive, not just the requested folder. Items are filtered client-side
+> by `parentReference.path` (must start with the target folder path, case-insensitive) before any
+> version fetching or vectorization, so cross-folder contamination is prevented.
+
+---
+
 ### Output files (written to `DOWNLOAD_PATH/<YYYYMMDD>/`)
 
 | File | Contents |
@@ -2457,7 +2498,7 @@ downloaded and re-vectorized. The `skipped_unchanged` field in every response sh
 |---|---|
 | **system** | Health checks, connectivity diagnostics, /tmp browser |
 | **files** | SharePoint file listing, metadata sync to HANA, download, rebuild |
-| **rag** | Full vectorize pipeline — download → extract → chunk → embed → upsert |
+| **rag** | Full vectorize pipeline — download → extract → chunk → embed → upsert. Sources: SharePoint (root / folder / item), S3 (prefix / item), local /tmp (folder / item) |
 | **analysis** | View HTML run reports and logs generated by vectorize runs |
 | **storage** | Browse and manage local `/tmp` output files |
 | **s3** | SAP BTP Object Store / S3 — list, upload, download, delete, presigned URLs |
@@ -2472,7 +2513,7 @@ app = FastAPI(
     openapi_tags = [
         {"name": "system",   "description": "Health checks and connectivity diagnostics for SharePoint, HANA, S3, and BTP Destination Service."},
         {"name": "files",    "description": "List SharePoint files, sync metadata to HANA, download file bytes, and rebuild files from stored chunks."},
-        {"name": "rag",      "description": "End-to-end vectorization pipeline: fetch → extract text → semantic chunk → embed → upsert to HANA. Supports root, folder, single-item, and POST-body modes."},
+        {"name": "rag",      "description": "End-to-end vectorization pipeline: fetch → extract text → semantic chunk → embed → upsert to HANA. Sources: SharePoint (root, folder, single-item, POST-body), S3 (prefix, single-item), local /tmp (folder, single-item). Versions upserted to BRAIN_SP_FILES_VERSIONS on all SharePoint modes."},
         {"name": "analysis", "description": "View auto-generated HTML run reports and per-call log files produced by vectorize runs."},
         {"name": "storage",  "description": "Browse, download, and delete files written to the local DOWNLOAD_PATH (/tmp on CF)."},
         {"name": "s3",       "description": "SAP BTP Object Store / S3 operations: list objects, upload, download, delete, presigned URLs."},
@@ -3329,10 +3370,17 @@ def get_vectorize(
     _write_to_json_array_indent(root_files,    path=path_root)
     _write_to_json_array_indent(versions_data, path=path_versions)
 
+    try:
+        ver_result = db.ingest_versions(versions_data)
+        clog.info(f"Ingested {ver_result.get('sp_files_versions', 0)} version records into BRAIN_SP_FILES_VERSIONS")
+    except Exception as _e:
+        clog.warning(f"ingest_versions skipped: {_e}")
+        ver_result = {}
+
     log.info(f"GET /vectorize complete — {len(to_process)} files processed, {n_chunks} chunks, {skipped_unchanged} skipped → {save_dir}")
     clog.info(f"Complete — {len(to_process)} processed, {n_chunks} chunks, {skipped_unchanged} unchanged")
 
-    db_result = {"per_file_ingest": ingest_results}
+    db_result = {"per_file_ingest": ingest_results, **ver_result}
 
     return PipelineResponse(
         count_root_files  = len(root_files),
@@ -3360,8 +3408,10 @@ def vectorize_folder(
     Same pipeline as `GET /vectorize` but scoped to a single SharePoint subfolder.
 
     **Graph API call**
-    - `use_delta=true` (default): `drives/{drive_id}/root:/{folder_path}:/delta` — recursive, all sub-folders
-    - `use_delta=false`: `drives/{drive_id}/root:/{folder_path}` — direct children only
+    - `use_delta=true` (default): `drives/{drive_id}/root:/{folder_path}:/delta` — recursive, all sub-folders.
+      Results are filtered client-side by `parentReference.path` (must start with `/{folder_path}`,
+      case-insensitive) because the first delta call with no token returns all drive items.
+    - `use_delta=false`: `drives/{drive_id}/root:/{folder_path}` — direct children only (no path filter needed)
 
     **Pipeline steps**
     1. Fetch all files under the folder path (paginated)
@@ -3407,6 +3457,12 @@ def vectorize_folder(
     clog.info(f"Starting vectorization — {len(to_process)} files to process, {skipped_unchanged} unchanged")
 
     db_result = {}
+    try:
+        ver_result = db.ingest_versions(versions_data)
+        clog.info(f"Ingested {ver_result.get('sp_files_versions', 0)} version records into BRAIN_SP_FILES_VERSIONS")
+        db_result.update(ver_result)
+    except Exception as _e:
+        clog.warning(f"ingest_versions skipped: {_e}")
 
     if not to_process:
         clog.info("All files already up-to-date — nothing to vectorize")
@@ -3783,10 +3839,13 @@ def vectorize(req: VectorizeRequest):
     detection and vectorizes only new/modified files.
 
     **Pipeline steps** (same as GET /vectorize)
-    1. Change detection against HANA
-    2. Download → extract text → semantic chunk → embed → upsert to HANA
-    3. Optionally fetch + upsert version history if versions were included in the input
+    1. If `items` is omitted: auto-fetch all root files with version history, then upsert versions to `BRAIN_SP_FILES_VERSIONS`
+    2. Change detection against HANA — skip unchanged files
+    3. Download → extract text → semantic chunk → embed → upsert to HANA
     4. Write output JSONL files, generate HTML report, upload artifacts to S3
+
+    > **Version ingest** — version records are only upserted when `items` is omitted (auto-fetch
+    > mode). When an explicit `items` list is provided, no version fetching or ingest occurs.
 
     **Body example**
     ```json
@@ -3843,7 +3902,12 @@ def vectorize(req: VectorizeRequest):
         path_versions = os.path.join(os.path.dirname(path_chunks), f"sp_files_versions_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json")
         _write_to_json_array_indent(versions_data, path=path_versions)
         saved_to.append(path_versions)
-
+        try:
+            ver_result = db.ingest_versions(versions_data)
+            clog.info(f"Ingested {ver_result.get('sp_files_versions', 0)} version records into BRAIN_SP_FILES_VERSIONS")
+            db_result.update(ver_result)
+        except Exception as _e:
+            clog.warning(f"ingest_versions skipped: {_e}")
 
     log.info(f"Vectorize complete — {n_chunks} chunks, {n_files} processed, {skipped_unchanged} skipped → {path_chunks}")
     clog.info(f"Complete — {n_chunks} chunks, {n_files} processed, {skipped_unchanged} unchanged")
@@ -3994,6 +4058,12 @@ def pipeline(req: PipelineRequest = PipelineRequest()):
     _write_to_json_array_indent(versions_data, path=path_versions)
 
     db_result = {}
+    try:
+        ver_result = db.ingest_versions(versions_data)
+        clog.info(f"Ingested {ver_result.get('sp_files_versions', 0)} version records into BRAIN_SP_FILES_VERSIONS")
+        db_result.update(ver_result)
+    except Exception as _e:
+        clog.warning(f"ingest_versions skipped: {_e}")
 
     if not to_process:
         clog.info("All files already up-to-date — nothing to vectorize")
