@@ -1,4 +1,4 @@
----
+﻿---
 applications:
   - name: sharepoint-rag-api
     memory: 1536M
@@ -21,6 +21,11 @@ applications:
       HF_HUB_DISABLE_SYMLINKS_WARNING: "1"
       HF_HUB_DISABLE_IMPLICIT_TOKEN: "1"
       TOKENIZERS_PARALLELISM: "false"
+      S4_BASE_URL: "https://my407593.s4hana.cloud.sap"
+      S4_CLIENT: "080"
+      S4_DESTINATION: "BTP-Public-Cloud"
+      # S4_USER: ""       # Set to a Communication User to enable ADT Basic Auth
+      # S4_PASSWORD: ""   # Communication User password
     services:
       - btp-catalyst-platform-destination   # BTP Destination Service
       - btp-catalyst-platform-db            # HANA HDI container

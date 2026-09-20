@@ -27,6 +27,7 @@ from pydantic import BaseModel, Field
 import uvicorn
 import db
 import s3
+import s4
 
 load_dotenv()
 
@@ -65,7 +66,7 @@ _embed_model = None
 def _get_embed_model():
     global _embed_model
     if _embed_model is None:
-        _embed_model = SentenceTransformer("all-MiniLM-L6-v2")
+        _embed_model = SentenceTransformer("BAAI/bge-small-en-v1.5")
     return _embed_model
 _token_cache = {"token": None, "expires_at": 0}
 _token_lock  = threading.Lock()
@@ -1783,13 +1784,13 @@ def _download_and_vectorize(items: list[dict], logger: logging.Logger = None) ->
         print(f"  [STEP 3/6 CHUNK] {len(chunks)} semantic chunks")
         _log.info(f"  [STEP 3/6 CHUNK] OK — {len(chunks)} chunks")
 
-        _log.info(f"  [STEP 4/6 EMBED] Encoding {len(chunks)} chunk(s) with all-MiniLM-L6-v2")
+        _log.info(f"  [STEP 4/6 EMBED] Encoding {len(chunks)} chunk(s) with BAAI/bge-small-en-v1.5")
         file_chunks  = []
         file_vectors = []
         try:
             for i, chunk_text in enumerate(chunks, start=1):
                 _log.debug(f"    Embedding chunk {i}/{len(chunks)}")
-                embedding = _get_embed_model().encode(chunk_text).tolist()
+                embedding = _get_embed_model().encode(chunk_text, normalize_embeddings=True).tolist()
                 file_chunks.append({
                     "item_id":    item_id,
                     "filename":   filename,
@@ -2051,7 +2052,7 @@ def _download_and_vectorize_tmp(paths: list[str], logger: logging.Logger = None,
         file_vectors = []
         try:
             for i, chunk_text in enumerate(chunks, start=1):
-                embedding = _get_embed_model().encode(chunk_text).tolist()
+                embedding = _get_embed_model().encode(chunk_text, normalize_embeddings=True).tolist()
                 file_chunks.append({"item_id": item_id, "filename": filename, "chunk_id": i, "chunk_data": chunk_text})
                 file_vectors.append({"item_id": item_id, "filename": filename, "chunk_id": i, "vector_data": embedding})
         except Exception as e:
@@ -2246,7 +2247,7 @@ def _download_and_vectorize_s3(objects: list[dict], logger: logging.Logger = Non
         file_vectors = []
         try:
             for i, chunk_text in enumerate(chunks, start=1):
-                embedding = _get_embed_model().encode(chunk_text).tolist()
+                embedding = _get_embed_model().encode(chunk_text, normalize_embeddings=True).tolist()
                 file_chunks.append({"item_id": item_id, "filename": filename, "chunk_id": i, "chunk_data": chunk_text})
                 file_vectors.append({"item_id": item_id, "filename": filename, "chunk_id": i, "vector_data": embedding})
         except Exception as e:
@@ -2425,7 +2426,7 @@ Local /tmp filesystem      ──┘
                               ▼
                          api.py  ──► text extraction (docx, xlsx, pdf, pptx, csv, …)
                               │      semantic chunking (512-token windows)
-                              │      embedding (all-MiniLM-L6-v2, 384-dim)
+                              │      embedding (BAAI/bge-small-en-v1.5, 384-dim, 512-token)
                               ▼
                          db.py   ──► SAP HANA Cloud
                               │       BRAIN_SP_FILES · BRAIN_TEXT_CHUNKS · BRAIN_VECTORS
@@ -3304,8 +3305,9 @@ def get_file_hash(item_id: str):
     summary        = "Full vectorize pipeline — fetch all root files, extract, embed, upsert (GET)",
 )
 def get_vectorize(
-    save_dir: str   | None = Query(None, description="Absolute local path for output files. Defaults to DOWNLOAD_PATH/<YYYYMMDD>/."),
-    delay:    float        = Query(1.0,  ge=0.0, le=10.0, description="Seconds between per-file version-fetch requests. Range: 0–10 s."),
+    save_dir: str   | None = Query(None,  description="Absolute local path for output files. Defaults to DOWNLOAD_PATH/<YYYYMMDD>/."),
+    delay:    float        = Query(1.0,   ge=0.0, le=10.0, description="Seconds between per-file version-fetch requests. Range: 0–10 s."),
+    force:    bool         = Query(False, description="Skip change detection and re-vectorize all files regardless of last-modified date."),
 ):
     """
     End-to-end vectorization pipeline for **all files** in the SharePoint root drive.
@@ -3327,7 +3329,7 @@ def get_vectorize(
     For a POST body with an explicit item list use `POST /vectorize`.
     """
     clog = _call_logger("vectorize")
-    clog.info(f"GET /vectorize called — delay={delay}, save_dir={save_dir}")
+    clog.info(f"GET /vectorize called — delay={delay}, save_dir={save_dir}, force={force}")
     log.info("GET /vectorize — fetching root files with versions")
     try:
         root_files = _get_root_files_with_versions(delay=delay)
@@ -3345,7 +3347,11 @@ def get_vectorize(
     #     db.ingest_file_registry(root_files, source="sharepoint")
     # except Exception as _e:
     #     clog.warning(f"file_registry ingest skipped: {_e}")
-    to_process, skipped_unchanged = _filter_stale_items(root_files, logger=clog)
+    if force:
+        clog.info("force=True — bypassing change detection, re-vectorizing all files")
+        to_process, skipped_unchanged = root_files, 0
+    else:
+        to_process, skipped_unchanged = _filter_stale_items(root_files, logger=clog)
     clog.info(f"Starting vectorization — {len(to_process)} files to process, {skipped_unchanged} unchanged")
     if not to_process:
         clog.info("All files already up-to-date — nothing to vectorize")
@@ -4868,6 +4874,125 @@ def vectorize_tmp_item(req: TmpVectorizeItemRequest):
         saved_to          = [p for p in [path_chunks, path_raw, path_vectors, path_root, path_html, path_log] if p],
         db_ingest         = {"per_file_ingest": ingest_results},
     )
+
+
+# ── S/4HANA ADT endpoints ─────────────────────────────────────────────────────
+
+class S4PublishRequest(BaseModel):
+    s3_key:       str   = Field(...,  description="S3 object key of the .abap source file")
+    package:      str   = Field(...,  description="ABAP package (e.g. ZLOCAL)")
+    program_name: str   = Field(...,  description="ABAP program name (e.g. ZMYPROGRAM)")
+    description:  str   = Field("",  description="Program description (optional)")
+    s4_user:      str | None = Field(None, description="Override S4 user (Communication User)")
+    s4_password:  str | None = Field(None, description="Override S4 password")
+
+
+class S4PublishResponse(BaseModel):
+    program:     str
+    package:     str
+    action:      str
+    source_size: int
+    base_url:    str
+    s3_key:      str
+
+
+@app.post("/s4/publish-abap", tags=["s4"], response_model=S4PublishResponse,
+          summary="Download ABAP source from S3 and publish to S/4HANA via ADT")
+def s4_publish_abap(req: S4PublishRequest):
+    """
+    Downloads an ABAP source file from S3 (by `s3_key`) and publishes it to
+    S/4HANA Cloud via the ADT REST API.
+
+    **Auth:** Uses `S4_USER` / `S4_PASSWORD` env vars (Communication User) if set,
+    then falls back to the BTP Destination Service (`SAP-PublicCloud-Dev`),
+    then to `s4_user` / `s4_password` from the request body.
+
+    **Note:** SSO/named users (e.g. `@accenture.com`) will fail — S/4HANA Cloud
+    requires a Communication User for programmatic ADT access.
+    """
+    # Download ABAP source from S3
+    try:
+        obj = s3.get_object(req.s3_key)
+        source_code = obj["Body"].read().decode("utf-8", errors="replace")
+    except Exception as e:
+        raise HTTPException(status_code=404, detail=f"S3 key not found or unreadable: {e}")
+
+    # Resolve S/4HANA session
+    dest_token = None
+    dest_uri   = None
+    if _ON_CF:
+        try:
+            dest_token = _get_dest_svc_token()
+            dest_uri   = _get_dest_svc_creds().get("uri")
+        except Exception as e:
+            log.warning(f"S4: could not get Destination Service token: {e}")
+
+    try:
+        session, base_url, _ = s4.get_s4_session(
+            dest_svc_token=dest_token,
+            dest_svc_uri=dest_uri,
+            override_user=req.s4_user,
+            override_pass=req.s4_password,
+        )
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+
+    # Publish
+    try:
+        result = s4.publish_abap(
+            session=session,
+            base_url=base_url,
+            package=req.package,
+            program_name=req.program_name,
+            source_code=source_code,
+            description=req.description,
+        )
+    except RuntimeError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+    return S4PublishResponse(s3_key=req.s3_key, **result)
+
+
+@app.get("/s4/test-connection", tags=["s4"],
+         summary="Test S/4HANA ADT connectivity and auth")
+def s4_test_connection(
+    s4_user: str | None = Query(None, description="Override user (Communication User)"),
+    s4_password: str | None = Query(None, description="Override password"),
+):
+    """
+    Verifies that the API can reach the S/4HANA ADT endpoint and authenticate.
+    Returns connection status, auth method used, and CSRF token availability.
+    """
+    dest_token = None
+    dest_uri   = None
+    if _ON_CF:
+        try:
+            dest_token = _get_dest_svc_token()
+            dest_uri   = _get_dest_svc_creds().get("uri")
+        except Exception as e:
+            log.warning(f"S4: Destination Service unavailable: {e}")
+
+    try:
+        session, base_url, client = s4.get_s4_session(
+            dest_svc_token=dest_token,
+            dest_svc_uri=dest_uri,
+            override_user=s4_user,
+            override_pass=s4_password,
+        )
+    except RuntimeError as e:
+        return {"connected": False, "error": str(e), "base_url": s4.S4_BASE_URL}
+
+    try:
+        csrf = s4.fetch_csrf_token(session, base_url)
+        return {
+            "connected":   True,
+            "base_url":    base_url,
+            "sap_client":  client,
+            "csrf_token":  "present" if csrf else "absent",
+            "auth_method": "override" if s4_user else ("env_var" if os.getenv("S4_USER") else "destination"),
+        }
+    except RuntimeError as e:
+        return {"connected": False, "base_url": base_url, "error": str(e)}
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────

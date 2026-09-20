@@ -945,6 +945,55 @@ class QueryRequest(BaseModel):
     top_k: int = Field(5, ge=1, le=50, description="Number of results to return")
 
 
+class SqlRequest(BaseModel):
+    sql:    str        = Field(..., description="SELECT-only SQL query. Use ? placeholders for values.")
+    params: list       = Field(default_factory=list, description="Positional parameters for ? placeholders")
+    limit:  int        = Field(100, ge=1, le=5000, description="Max rows returned")
+
+
+def _validate_sql(sql: str) -> None:
+    """
+    Rejects anything that is not a plain SELECT:
+      - non-SELECT first keyword
+      - DML / DDL / procedural keywords
+      - comment sequences (-- and /* */)
+      - semicolons (statement stacking)
+    Values must be passed via the params list, not embedded as literals,
+    to prevent injection through user-controlled string values.
+    """
+    import re
+    cleaned = sql.strip()
+
+    # Block SQL comments (-- and /* */)
+    if re.search(r"--|/\*|\*/", cleaned):
+        raise HTTPException(status_code=400, detail="SQL comments are not permitted")
+
+    # Block semicolons — prevents statement stacking
+    if ";" in cleaned:
+        raise HTTPException(status_code=400, detail="Semicolons are not permitted")
+
+    # Must begin with SELECT
+    first_word = re.split(r"\s+", cleaned, maxsplit=1)[0].upper()
+    if first_word != "SELECT":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Only SELECT statements are permitted (received: {first_word})"
+        )
+
+    # Block dangerous keywords (word-boundary match, case-insensitive)
+    _BLOCKED = re.compile(
+        r"\b(INSERT|UPDATE|DELETE|DROP|CREATE|ALTER|TRUNCATE|EXEC|EXECUTE"
+        r"|GRANT|REVOKE|MERGE|CALL|PRAGMA|ATTACH|DETACH|INTO|OUTFILE|LOAD)\b",
+        re.IGNORECASE,
+    )
+    hit = _BLOCKED.search(cleaned)
+    if hit:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Keyword '{hit.group().upper()}' is not permitted in SQL queries"
+        )
+
+
 @router.post("/query")
 def db_query(req: QueryRequest):
     from api import _get_embed_model
@@ -955,6 +1004,35 @@ def db_query(req: QueryRequest):
     except Exception as e:
         log.error(f"Query failed: {type(e).__name__}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/sql", summary="Run a validated SELECT query against HANA")
+def db_sql(req: SqlRequest):
+    _validate_sql(req.sql)
+    conn = _connect()
+    cur  = conn.cursor()
+    try:
+        cur.execute(req.sql, req.params or [])
+        cols = [d[0] for d in (cur.description or [])]
+        rows = cur.fetchmany(req.limit)
+        result_rows = []
+        for row in rows:
+            record = {}
+            for col, val in zip(cols, row):
+                if hasattr(val, "read"):
+                    val = val.read()
+                if isinstance(val, (bytes, bytearray)):
+                    val = val.decode("utf-8", errors="replace")
+                record[col] = val
+            result_rows.append(record)
+        return {"count": len(result_rows), "columns": cols, "rows": result_rows}
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.error(f"SQL query failed: {type(e).__name__}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        cur.close()
 
 
 @router.get("/files")
@@ -981,6 +1059,43 @@ def db_chunks(item_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+
+
+@router.get("/vectors/{item_id}")
+def db_vectors(item_id: str):
+    conn = _connect()
+    cur  = conn.cursor()
+    try:
+        cur.execute(
+            f'SELECT chunk_id, vector_data FROM {_t("CATALYSTPLATFORM_BRAIN_VECTORS")}'
+            f' WHERE item_id=? ORDER BY chunk_id',
+            (item_id,)
+        )
+        rows = cur.fetchall()
+        if not rows:
+            raise HTTPException(status_code=404, detail=f"No vectors found for item_id: {item_id}")
+        import struct as _struct, json as _json
+        out = []
+        for cid, vd in rows:
+            if hasattr(vd, "read"):
+                vd = vd.read()
+            if isinstance(vd, (bytes, bytearray)):
+                # HANA REAL_VECTOR binary: [type:uint16 LE][dims:uint16 LE][float32*dims LE]
+                num_dims = _struct.unpack_from("<H", vd, 2)[0]
+                floats   = list(_struct.unpack_from(f"<{num_dims}f", vd, 4))
+            elif isinstance(vd, str):
+                floats = _json.loads(vd)
+            else:
+                floats = list(vd)
+            out.append({"chunk_id": cid, "vector": floats})
+        return {"item_id": item_id, "count": len(out), "vectors": out}
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.error(f"DB vectors failed: {type(e).__name__}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        cur.close()
 
 
 @router.delete("/item/{item_id}", dependencies=[Depends(_require_destructive)])
