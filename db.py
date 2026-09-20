@@ -1132,47 +1132,16 @@ def db_migrate():
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/drop", dependencies=[Depends(_require_destructive)])
-def db_drop(confirm: bool = False):
-    """
-    Drop all 5 BRAIN tables entirely (schema + data).
-    Call POST /db/init afterward to recreate them.
-    Requires ?confirm=true to prevent accidental calls.
-    """
-    if not confirm:
-        raise HTTPException(
-            status_code=400,
-            detail="Pass ?confirm=true to confirm dropping all BRAIN tables.",
-        )
-    try:
-        result = drop_tables()
-        dropped = [t for t, s in result.items() if s == "dropped"]
-        log.warning(f"DB drop executed — {len(dropped)} tables dropped")
-        return {"status": "ok", "tables": result}
-    except Exception as e:
-        log.error(f"DB drop failed: {type(e).__name__}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+@router.post("/drop")
+def db_drop():
+    """[DISABLED] This endpoint has been permanently disabled."""
+    raise HTTPException(status_code=410, detail="This endpoint is disabled.")
 
 
-@router.post("/truncate", dependencies=[Depends(_require_destructive)])
-def db_truncate(confirm: bool = False):
-    """
-    Delete ALL rows from all BRAIN tables.
-    Requires ?confirm=true to prevent accidental calls.
-    """
-    if not confirm:
-        raise HTTPException(
-            status_code=400,
-            detail="Pass ?confirm=true to confirm deletion of all rows from all BRAIN tables.",
-        )
-    try:
-        result = truncate_tables()
-        total = sum(v["deleted"] for v in result.values())
-        log.warning(f"DB truncate executed — {total} total rows deleted across {len(result)} tables")
-        return {"status": "ok", "total_deleted": total, "tables": result}
-    except Exception as e:
-        log.error(f"DB truncate failed: {type(e).__name__}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+@router.post("/truncate")
+def db_truncate():
+    """[DISABLED] This endpoint has been permanently disabled."""
+    raise HTTPException(status_code=410, detail="This endpoint is disabled.")
 
 
 @router.get("/file-registry")
