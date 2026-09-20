@@ -1,0 +1,1123 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Catalyst Vectorization — Architecture & Flow Diagram</title>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Segoe UI',system-ui,sans-serif;background:#0a0e1a;color:#ffffff;min-height:100vh;padding:2.5rem 2rem}
+h1{font-size:1.6rem;font-weight:700;color:#f8fafc;margin-bottom:.35rem}
+.subtitle{font-size:.85rem;color:#cbd5e1;margin-bottom:2.5rem}
+
+/* ── Layout ── */
+.page{display:flex;flex-direction:column;gap:2.5rem}
+
+/* ── Section headers ── */
+.section-label{font-size:.68rem;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:#94a3b8;display:flex;align-items:center;gap:.6rem;margin-bottom:1rem}
+.section-label::after{content:'';flex:1;height:1px;background:#1e293b}
+
+/* ── Cards ── */
+.card{background:#111827;border:1px solid #1e293b;border-radius:12px;padding:1.5rem}
+
+/* ── Horizontal flow row ── */
+.flow-row{display:flex;align-items:center;gap:0;flex-wrap:nowrap;overflow-x:auto;padding-bottom:.5rem}
+.flow-row .node{flex-shrink:0}
+.arrow{display:flex;align-items:center;flex-shrink:0}
+.arrow svg{width:36px;height:20px}
+.arrow-label{font-size:.65rem;color:#94a3b8;text-align:center;margin-top:.15rem;white-space:nowrap}
+.arrow-col{display:flex;flex-direction:column;align-items:center;flex-shrink:0}
+
+/* ── Node styles ── */
+.node{display:flex;flex-direction:column;align-items:center;gap:.4rem;flex-shrink:0}
+.node-box{border-radius:8px;padding:.7rem 1rem;font-size:.78rem;font-weight:600;text-align:center;min-width:110px;max-width:140px;line-height:1.35;border:1px solid transparent;cursor:default;transition:transform .15s,box-shadow .15s}
+.node-box:hover{transform:translateY(-2px);box-shadow:0 6px 20px rgba(0,0,0,.4)}
+.node-label{font-size:.62rem;color:#cbd5e1;text-align:center;max-width:130px;line-height:1.3}
+
+/* Colours */
+.col-blue  {background:#1e3a5f;border-color:#2563eb44;color:#bfdbfe}
+.col-green {background:#14532d44;border-color:#16a34a44;color:#bbf7d0}
+.col-purple{background:#3b0764aa;border-color:#7c3aed44;color:#ddd6fe}
+.col-orange{background:#431407aa;border-color:#ea580c44;color:#fed7aa}
+.col-teal  {background:#134e4a55;border-color:#0d9488aa;color:#99f6e4}
+.col-yellow{background:#422006aa;border-color:#d97706aa;color:#fef08a}
+.col-gray  {background:#1e293b;border-color:#64748b;color:#f8fafc}
+.col-red   {background:#450a0a88;border-color:#dc262644;color:#fca5a5}
+
+/* ── Credential table ── */
+.cred-grid{display:grid;grid-template-columns:1fr 1fr;gap:1rem}
+.cred-card{background:#0f172a;border:1px solid #1e293b;border-radius:8px;padding:1rem}
+.cred-title{font-size:.72rem;font-weight:700;color:#93c5fd;margin-bottom:.6rem;text-transform:uppercase;letter-spacing:.05em}
+.cred-row{display:flex;align-items:flex-start;gap:.5rem;margin-bottom:.35rem;font-size:.76rem;color:#f8fafc}
+.cred-row .dot{width:6px;height:6px;border-radius:50%;background:#3b82f6;margin-top:.35rem;flex-shrink:0}
+.cred-row strong{color:#ffffff}
+
+/* ── Pipeline steps ── */
+.steps{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:1rem}
+.step{background:#0f172a;border:1px solid #1e293b;border-radius:8px;padding:1rem;position:relative}
+.step-num{position:absolute;top:-10px;left:12px;background:#2563eb;color:#fff;font-size:.65rem;font-weight:800;border-radius:999px;padding:.1rem .5rem;letter-spacing:.04em}
+.step-title{font-size:.78rem;font-weight:700;color:#ffffff;margin-top:.25rem;margin-bottom:.4rem}
+.step-detail{font-size:.72rem;color:#cbd5e1;line-height:1.5}
+.step-detail code{background:#1e293b;color:#bfdbfe;padding:.05rem .3rem;border-radius:3px;font-size:.68rem}
+
+/* ── DB tables ── */
+.db-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:.85rem}
+.db-table{background:#0f172a;border:1px solid #1e293b;border-radius:8px;padding:.9rem}
+.db-table-name{font-size:.7rem;font-weight:800;color:#c4b5fd;font-family:monospace;margin-bottom:.5rem;letter-spacing:.03em}
+.db-col{font-size:.68rem;color:#cbd5e1;display:flex;gap:.4rem;margin-bottom:.2rem}
+.db-col-name{color:#f8fafc;min-width:120px}
+.db-col-type{color:#94a3b8}
+.db-pk{color:#fef08a;font-weight:700}
+
+/* ── File outputs ── */
+.file-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:.85rem}
+.file-item{background:#0f172a;border:1px solid #1e293b;border-radius:8px;padding:.9rem;display:flex;gap:.75rem;align-items:flex-start}
+.file-icon{font-size:1.3rem;flex-shrink:0}
+.file-name{font-size:.73rem;font-weight:700;color:#ffffff;font-family:monospace;margin-bottom:.25rem}
+.file-desc{font-size:.68rem;color:#cbd5e1;line-height:1.4}
+
+/* ── API route table ── */
+.route-group{margin-bottom:1.5rem}
+.route-group-title{font-size:.72rem;font-weight:700;color:#93c5fd;text-transform:uppercase;letter-spacing:.07em;margin-bottom:.5rem}
+.route-row{display:flex;align-items:flex-start;gap:.75rem;padding:.45rem .6rem;border-radius:6px;margin-bottom:.2rem;font-size:.76rem}
+.route-row:hover{background:#1e293b44}
+.method{font-size:.63rem;font-weight:800;padding:.12rem .5rem;border-radius:4px;min-width:44px;text-align:center;flex-shrink:0;margin-top:.05rem}
+.GET   {background:#14532d55;color:#bbf7d0;border:1px solid #16a34a55}
+.POST  {background:#1e3a5f55;color:#bfdbfe;border:1px solid #2563eb55}
+.DELETE{background:#450a0a55;color:#fca5a5;border:1px solid #dc262655}
+.route-path{font-family:monospace;color:#ffffff;min-width:260px;flex-shrink:0}
+.route-desc{color:#cbd5e1;line-height:1.4}
+
+/* ── Vertical stack flow ── */
+.vflow{display:flex;flex-direction:column;align-items:center;gap:0}
+.vflow .node-box{min-width:220px;max-width:280px}
+.vflow .varrow{display:flex;flex-direction:column;align-items:center;padding:.1rem 0}
+.vflow .varrow svg{width:20px;height:28px}
+.vflow .varrow-label{font-size:.63rem;color:#94a3b8;margin-top:.1rem}
+
+/* ── Change-detection callout ── */
+.callout{background:#1e293b;border-left:3px solid #2563eb;border-radius:0 8px 8px 0;padding:.8rem 1rem;font-size:.78rem;color:#f8fafc;line-height:1.6}
+.callout strong{color:#bfdbfe}
+
+/* ── Security guard badges ── */
+.guard-badge{font-size:.58rem;font-weight:700;padding:.1rem .45rem;border-radius:4px;flex-shrink:0;margin-top:.08rem;letter-spacing:.04em;white-space:nowrap}
+.guard-debug{background:#422006cc;color:#fef08a;border:1px solid #d97706aa}
+.guard-destr{background:#450a0a99;color:#fca5a5;border:1px solid #dc262699}
+.guard-gone {background:#1e293b;color:#94a3b8;border:1px solid #475569;text-decoration:line-through}
+
+/* ── Section description ── */
+.section-desc{font-size:.8rem;color:#94a3b8;line-height:1.85;margin-bottom:1.1rem;width:100%;padding:.9rem 1.2rem;background:#0f172a;border-left:3px solid #334155;border-radius:0 8px 8px 0;box-sizing:border-box}
+.section-desc strong{color:#e2e8f0}
+.section-desc code{background:#1e293b;color:#bfdbfe;padding:.05rem .35rem;border-radius:3px;font-size:.75rem}
+
+/* scroll hint */
+@media(max-width:900px){.flow-row{padding-bottom:1rem}}
+</style>
+</head>
+<body>
+<h1>Catalyst Vectorization — Architecture &amp; Flow Diagram</h1>
+<p class="subtitle">sharepoint-rag-api &nbsp;·&nbsp; SAP BTP Cloud Foundry &nbsp;·&nbsp; api.py · db.py · s3.py</p>
+
+<div class="page">
+
+<!-- ═══════════════════════════════════════════════════════ SECTION 1: HIGH-LEVEL ARCH -->
+<div>
+  <div class="section-label">1 — High-Level Architecture</div>
+  <p class="section-desc"><strong>What this slide shows:</strong> The end-to-end system topology of the Catalyst RAG platform. At the center is the FastAPI application (<strong>api.py + db.py + s3.py</strong>) deployed as a single Cloud Foundry app instance on SAP BTP with 1 536 MB RAM and 4 096 MB disk. To its left, <strong>SharePoint Online</strong> is the primary document source — files are fetched via the Microsoft Graph API using a drive delta endpoint that returns only changed items since the last run, keeping incremental syncs fast regardless of library size. To its right, <strong>SAP HANA Cloud</strong> stores all vectorized content in the BRAIN_* table family; every search query hits HANA's native <code>COSINE_SIMILARITY()</code> function directly inside the database engine, requiring no external vector store. Further right, <strong>S3 / Object Store</strong> receives run artifacts — HTML analysis reports and structured call logs — automatically uploaded after every vectorize cycle under a dated prefix. Below the main horizontal flow, <strong>three ingest sources</strong> are shown side-by-side: SharePoint (MS Graph item ID as the unique key), S3 / Object Store (ETag / MD5 as the key), and the CF container's <code>/tmp</code> filesystem (md5 of the absolute path as the key) — all three funnel into the same HANA tables through a shared pipeline, so source is transparent to the query layer. At the bottom, two infrastructure concerns are highlighted: the <strong>BTP Destination Service</strong> manages the OAuth2 credential chain (XSUAA → MS Graph token) so the app never handles long-lived secrets itself; and <strong>VCAP_SERVICES</strong> injects all three service bindings — HANA, Destination, and Object Store — into the container at CF runtime, meaning the Docker image contains zero credentials and is safe to store in any registry.</p>
+  <div class="card">
+    <div class="flow-row" style="justify-content:center;gap:0">
+
+      <!-- SharePoint -->
+      <div class="node">
+        <div class="node-box col-blue">
+          <svg viewBox="0 0 24 24" width="28" height="28" style="display:block;margin:0 auto .35rem" fill="#0078D4"><path d="M24 13.5q0 1.242-.475 2.332-.474 1.09-1.289 1.904-.814.815-1.904 1.29-1.09.474-2.332.474-.762 0-1.523-.2-.106.997-.557 1.858-.451.862-1.154 1.494-.704.633-1.606.99-.902.358-1.91.358-1.09 0-2.045-.416-.955-.416-1.664-1.125-.709-.709-1.125-1.664Q6 19.84 6 18.75q0-.188.018-.375.017-.188.04-.375H.997q-.41 0-.703-.293T0 17.004V6.996q0-.41.293-.703T.996 6h3.54q.14-1.277.726-2.373.586-1.096 1.488-1.904Q7.652.914 8.807.457 9.96 0 11.25 0q1.395 0 2.625.533T16.02 1.98q.914.915 1.447 2.145T18 6.75q0 .188-.012.375-.011.188-.035.375 1.242 0 2.344.469 1.101.468 1.928 1.277.826.809 1.3 1.904Q24 12.246 24 13.5zm-12.75-12q-.973 0-1.857.34-.885.34-1.577.943-.691.604-1.154 1.43Q6.2 5.039 6.06 6h4.945q.41 0 .703.293t.293.703v4.945l.21-.035q.212-.75.61-1.424.399-.673.944-1.218.545-.545 1.213-.944.668-.398 1.43-.61.093-.503.093-.96 0-1.09-.416-2.045-.416-.955-1.125-1.664-.709-.709-1.664-1.125Q12.34 1.5 11.25 1.5zM6.117 15.902q.54 0 1.06-.111.522-.111.932-.37.41-.257.662-.679.252-.422.252-1.055 0-.632-.263-1.054-.264-.422-.662-.703-.399-.282-.856-.463l-.855-.34q-.399-.158-.662-.334-.264-.176-.264-.445 0-.2.14-.323.141-.123.335-.193.193-.07.404-.094.21-.023.351-.023.598 0 1.055.152.457.153.95.457V8.543q-.282-.082-.522-.14-.24-.06-.475-.1-.234-.041-.486-.059-.252-.017-.557-.017-.515 0-1.054.117-.54.117-.979.375-.44.258-.715.68-.275.421-.275 1.03 0 .598.263.997.264.398.663.68.398.28.855.474l.856.363q.398.17.662.358.263.187.263.457 0 .222-.123.351-.123.13-.31.2-.188.07-.393.087-.205.018-.369.018-.703 0-1.248-.234-.545-.235-1.107-.621v1.875q1.195.468 2.472.468zM11.25 22.5q.773 0 1.453-.293t1.19-.803q.51-.51.808-1.195.299-.686.299-1.459 0-.668-.223-1.277-.222-.61-.62-1.096-.4-.486-.95-.826-.55-.34-1.207-.48v1.933q0 .41-.293.703t-.703.293H7.57q-.07.375-.07.75 0 .773.293 1.459t.803 1.195q.51.51 1.195.803.686.293 1.459.293zM18 18q.926 0 1.746-.352.82-.351 1.436-.966.615-.616.966-1.43.352-.815.352-1.752 0-.926-.352-1.746-.351-.82-.966-1.436-.616-.615-1.436-.966Q18.926 9 18 9t-1.74.357q-.815.358-1.43.973t-.973 1.43q-.357.814-.357 1.74 0 .129.006.258t.017.258q.551.27 1.02.65t.838.855q.369.475.627 1.026.258.55.387 1.148Q17.18 18 18 18Z"/></svg>
+          SharePoint<br/>Online
+        </div>
+        <div class="node-label">MS Graph API<br/>drive delta / items</div>
+      </div>
+
+      <div class="arrow-col">
+        <div class="arrow"><svg viewBox="0 0 36 20"><path d="M2 10h28M26 4l8 6-8 6" stroke="#3b82f6" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+        <div class="arrow-label">OAuth2<br/>Bearer token</div>
+      </div>
+
+      <!-- API -->
+      <div class="node">
+        <div class="node-box col-purple" style="min-width:130px">
+          <svg viewBox="0 0 24 24" width="28" height="28" style="display:block;margin:0 auto .35rem" fill="#009688"><path d="M12 .0387C5.3729.0384.0003 5.3931 0 11.9988c-.001 6.6066 5.372 11.9628 12 11.9625 6.628.0003 12.001-5.3559 12-11.9625-.0003-6.6057-5.3729-11.9604-12-11.96m-.829 5.4153h7.55l-7.5805 5.3284h5.1828L5.279 18.5436q2.9466-6.5444 5.892-13.0896"/></svg>
+          api.py<br/><span style="font-size:.68rem;font-weight:400">FastAPI + uvicorn</span>
+        </div>
+        <div class="node-label">CF app instance<br/>1536M / 4096M disk</div>
+      </div>
+
+      <div class="arrow-col">
+        <div class="arrow"><svg viewBox="0 0 36 20"><path d="M2 10h28M26 4l8 6-8 6" stroke="#7c3aed" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+        <div class="arrow-label">hdbcli<br/>TCP 443</div>
+      </div>
+
+      <!-- HANA -->
+      <div class="node">
+        <div class="node-box col-teal">
+          <svg viewBox="0 0 24 24" width="28" height="28" style="display:block;margin:0 auto .35rem" fill="#009FDB"><path d="M0 6.064v11.872h12.13L24 6.064zm3.264 2.208h.005c.863.001 1.915.245 2.676.633l-.82 1.43c-.835-.404-1.255-.442-1.73-.467-.708-.038-1.064.215-1.069.488-.007.332.669.633 1.305.838.964.306 2.19.715 2.377 1.9L7.77 8.437h2.046l2.064 5.576-.007-5.575h2.37c2.257 0 3.318.764 3.318 2.519 0 1.575-1.09 2.514-2.936 2.514h-.763l-.01 2.094-3.588-.003-.25-.908c-.37.122-.787.189-1.23.189-.456 0-.885-.071-1.263-.2l-.358.919-2 .006.09-.462c-.029.025-.057.05-.087.074-.535.43-1.208.629-2.037.644l-.213.002a5.075 5.075 0 0 1-2.581-.675l.73-1.448c.79.467 1.286.572 1.956.558.347-.007.598-.07.761-.239a.557.557 0 0 0 .156-.369c.007-.376-.53-.553-1.185-.756-.531-.164-1.135-.389-1.606-.735-.559-.41-.825-.924-.812-1.65a1.99 1.99 0 0 1 .566-1.377c.519-.537 1.357-.863 2.363-.863zm10.597 1.67v1.904h.521c.694 0 1.247-.23 1.248-.964 0-.709-.554-.94-1.248-.94zm-5.087.767l-.748 2.362c.223.085.481.133.757.133.268 0 .52-.047.742-.126l-.736-2.37z"/></svg>
+          SAP HANA<br/>Cloud
+        </div>
+        <div class="node-label">BRAIN_* tables<br/>vector search</div>
+      </div>
+
+      <div class="arrow-col">
+        <div class="arrow"><svg viewBox="0 0 36 20"><path d="M2 10h28M26 4l8 6-8 6M10 4l-8 6 8 6" stroke="#0d9488" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+        <div class="arrow-label">boto3<br/>S3 API</div>
+      </div>
+
+      <!-- S3 -->
+      <div class="node">
+        <div class="node-box col-yellow">
+          <svg viewBox="0 0 24 24" width="28" height="28" style="display:block;margin:0 auto .35rem" fill="#FF9900"><path d="M20.913 13.147l.12-.895c.947.576 1.258.922 1.354 1.071-.16.031-.562.046-1.474-.176zm-2.174 7.988a.547.547 0 0 0-.005.073c0 .084-.207.405-1.124.768a10.28 10.28 0 0 1-1.438.432c-1.405.325-3.128.504-4.853.504-4.612 0-7.412-1.184-7.412-1.704a.547.547 0 0 0-.005-.073L1.81 5.602c.135.078.28.154.432.227.042.02.086.038.128.057.134.062.272.122.417.18l.179.069c.154.058.314.114.478.168.043.013.084.029.13.043.207.065.423.127.646.187l.176.044c.175.044.353.087.534.127a23.414 23.414 0 0 0 .843.17l.121.023c.252.045.508.085.768.122.071.011.144.02.216.03.2.027.4.053.604.077l.24.027c.245.026.49.05.74.07l.081.009c.275.022.552.04.83.056l.233.012c.21.01.422.018.633.025a33.088 33.088 0 0 0 2.795-.026l.232-.011c.278-.016.555-.034.83-.056l.08-.008c.25-.02.497-.045.742-.072l.238-.026c.205-.024.408-.05.609-.077.07-.01.141-.019.211-.03.261-.037.519-.078.772-.122l.111-.02c.215-.04.427-.082.634-.125l.212-.047c.186-.041.368-.085.546-.13l.166-.042c.225-.06.444-.122.654-.189.04-.012.077-.026.115-.038a10.6 10.6 0 0 0 .493-.173c.058-.021.114-.044.17-.066.15-.06.293-.12.43-.185.038-.017.079-.034.116-.052.153-.073.3-.15.436-.228l-.976 7.245c-2.488-.78-5.805-2.292-7.311-3a1.09 1.09 0 0 0-1.088-1.085c-.6 0-1.088.489-1.088 1.088 0 .6.488 1.089 1.088 1.089.196 0 .378-.056.537-.148 1.72.812 5.144 2.367 7.715 3.15zm-7.42-20.047c5.677 0 9.676 1.759 9.75 2.736l-.014.113c-.01.033-.031.067-.048.101-.015.028-.026.057-.047.087-.024.033-.058.068-.09.102-.028.03-.051.06-.084.09-.038.035-.087.07-.133.105-.04.03-.074.06-.119.091-.053.036-.116.071-.177.107-.05.03-.095.06-.15.09-.068.036-.147.073-.222.11-.059.028-.114.057-.177.085-.084.038-.177.074-.268.111-.068.027-.13.054-.203.082-.097.036-.205.072-.31.107-.075.026-.148.053-.228.079-.111.035-.233.069-.35.103-.085.024-.165.05-.253.073-.124.034-.258.065-.389.098-.093.022-.181.046-.278.068-.139.032-.287.061-.433.091-.098.02-.191.041-.293.06-.155.03-.32.057-.482.084-.1.018-.198.036-.302.052-.166.026-.342.048-.515.072-.11.014-.213.03-.325.044-.181.023-.372.041-.56.06-.11.012-.218.025-.332.036-.188.016-.386.029-.58.043-.122.009-.24.02-.364.028-.207.012-.422.02-.635.028-.12.005-.234.012-.354.016a35.605 35.605 0 0 1-2.069 0c-.12-.004-.234-.011-.352-.016-.214-.008-.43-.016-.637-.028-.122-.008-.238-.02-.36-.027-.195-.015-.394-.028-.584-.044-.11-.01-.215-.024-.324-.035-.19-.02-.384-.038-.568-.06l-.315-.044c-.176-.024-.355-.046-.525-.073-.1-.015-.192-.033-.29-.05-.167-.028-.335-.055-.494-.086-.096-.018-.183-.038-.276-.056-.151-.032-.305-.062-.45-.095-.09-.02-.173-.043-.26-.064-.138-.034-.277-.067-.407-.102-.082-.022-.157-.046-.235-.069a11.75 11.75 0 0 1-.368-.108c-.075-.024-.141-.049-.213-.073-.11-.037-.223-.075-.325-.113-.067-.025-.125-.051-.188-.077-.096-.038-.195-.076-.282-.115-.06-.027-.11-.054-.166-.08-.08-.039-.162-.077-.233-.116-.052-.028-.094-.055-.142-.084-.063-.038-.13-.075-.185-.113-.043-.029-.075-.058-.113-.086-.048-.037-.098-.073-.139-.11-.032-.029-.054-.057-.08-.087-.033-.035-.069-.07-.093-.104-.02-.03-.031-.058-.046-.086-.018-.035-.039-.068-.049-.102l-.015-.113c.076-.977 4.074-2.736 9.748-2.736zm12.182 12.124c-.118-.628-.84-1.291-2.31-2.128l.963-7.16a.531.531 0 0 0 .005-.073C22.16 1.581 16.447 0 11.32 0 6.194 0 .482 1.581.482 3.851a.58.58 0 0 0 .005.072L2.819 21.25c.071 2.002 5.236 2.75 8.5 2.75 1.805 0 3.615-.188 5.098-.531.598-.138 1.133-.3 1.592-.48 1.18-.467 1.789-1.053 1.813-1.739l.945-7.018c.557.131 1.016.197 1.389.197.54 0 .902-.137 1.134-.413a.956.956 0 0 0 .21-.804Z"/></svg>
+          Object Store<br/>/ S3
+        </div>
+        <div class="node-label">run artifacts<br/>HTML reports · logs</div>
+      </div>
+
+    </div>
+
+    <!-- Ingest sources row -->
+    <div style="margin-top:1.25rem;border-top:1px solid #1e293b;padding-top:1.1rem">
+      <div style="font-size:.66rem;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:#64748b;margin-bottom:.75rem;text-align:center">Three Ingest Sources → api.py</div>
+      <div style="display:flex;gap:1rem;flex-wrap:wrap;justify-content:center">
+        <div style="background:#1e3a5f;border:1px solid #2563eb44;border-radius:8px;padding:.65rem 1.1rem;font-size:.73rem;color:#bfdbfe;text-align:center;min-width:200px">
+          <div style="font-weight:700;margin-bottom:.3rem">SharePoint Online</div>
+          <div style="font-size:.65rem;color:#94a3b8;margin-bottom:.15rem">Download via <code style="background:#0a0e1a;color:#bfdbfe;padding:.02rem .25rem;border-radius:3px">BaseURL</code> (MS Graph)</div>
+          <div style="font-size:.65rem;color:#64748b">item_id = Graph opaque ID &nbsp;·&nbsp; source = <code style="background:#0a0e1a;color:#bfdbfe;padding:.02rem .2rem;border-radius:3px">"sharepoint"</code></div>
+        </div>
+        <div style="background:#422006aa;border:1px solid #d97706aa;border-radius:8px;padding:.65rem 1.1rem;font-size:.73rem;color:#fef08a;text-align:center;min-width:200px">
+          <div style="font-weight:700;margin-bottom:.3rem">S3 / Object Store</div>
+          <div style="font-size:.65rem;color:#94a3b8;margin-bottom:.15rem">Download via <code style="background:#0a0e1a;color:#fef08a;padding:.02rem .25rem;border-radius:3px">s3.download_bytes(key)</code></div>
+          <div style="font-size:.65rem;color:#64748b">item_id = S3 ETag (MD5) &nbsp;·&nbsp; source = <code style="background:#0a0e1a;color:#fef08a;padding:.02rem .2rem;border-radius:3px">"s3"</code></div>
+        </div>
+        <div style="background:#134e4a55;border:1px solid #0d9488aa;border-radius:8px;padding:.65rem 1.1rem;font-size:.73rem;color:#99f6e4;text-align:center;min-width:200px">
+          <div style="font-weight:700;margin-bottom:.3rem">/tmp Filesystem</div>
+          <div style="font-size:.65rem;color:#94a3b8;margin-bottom:.15rem">Read via <code style="background:#0a0e1a;color:#99f6e4;padding:.02rem .25rem;border-radius:3px">open(abs_path, "rb")</code></div>
+          <div style="font-size:.65rem;color:#64748b">item_id = md5(abs_path) &nbsp;·&nbsp; source = <code style="background:#0a0e1a;color:#99f6e4;padding:.02rem .2rem;border-radius:3px">"tmp"</code></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- BTP row -->
+    <div style="margin-top:1.5rem;display:flex;justify-content:center;gap:1.5rem;flex-wrap:wrap">
+      <div style="background:#1e293b;border:1px solid #64748b;border-radius:8px;padding:.6rem 1.1rem;font-size:.72rem;color:#f8fafc;text-align:center">
+        <div style="color:#93c5fd;font-weight:700;margin-bottom:.2rem">BTP Destination Service</div>
+        destination: <code style="color:#ddd6fe">BTP-CP_MS_Graph</code><br/>
+        OAuth2 client credentials → MS Graph token
+      </div>
+      <div style="background:#1e293b;border:1px solid #64748b;border-radius:8px;padding:.6rem 1.1rem;font-size:.72rem;color:#f8fafc;text-align:center">
+        <div style="color:#93c5fd;font-weight:700;margin-bottom:.2rem">VCAP_SERVICES</div>
+        injected by CF at runtime<br/>
+        hana · destination · objectstore
+      </div>
+      <div style="background:#1e293b;border:1px solid #64748b;border-radius:8px;padding:.6rem 1.1rem;font-size:.72rem;color:#f8fafc;text-align:center">
+        <div style="color:#93c5fd;font-weight:700;margin-bottom:.2rem">Sentence Transformers</div>
+        model: <code style="color:#ddd6fe">BAAI/bge-small-en-v1.5</code><br/>
+        384-dim · normalize_embeddings=True · max_seq_length=512
+      </div>
+    </div>
+  </div>
+</div>
+
+
+<!-- ═══════════════════════════════════════════════════════ SECTION 2: AUTH FLOW -->
+<div>
+  <div class="section-label">2 — Authentication &amp; Token Flow</div>
+  <p class="section-desc"><strong>What this slide shows:</strong> The two authentication paths the application supports, and how each one delivers a live MS Graph Bearer token to the SharePoint download logic. On <strong>Cloud Foundry (production)</strong>, the flow is a three-step chain: the app reads the BTP Destination Service binding from <code>VCAP_SERVICES</code> (clientid, clientsecret, url, uri), then POSTs to <code>{url}/oauth/token</code> using client credentials to obtain an XSUAA Bearer token, then GETs <code>{uri}/destination-configuration/v1/destinations/BTP-CP_MS_Graph</code> using that XSUAA token to retrieve the destination configuration. The Destination Service returns an <code>authTokens[]</code> array; the app extracts the first entry with <code>type = bearer</code> and a non-empty <code>value</code> field as the live MS Graph token. If no token is present in <code>authTokens</code> (e.g. the destination is not configured for token forwarding), the app falls back to calling Azure AD's <code>/oauth2/v2.0/token</code> endpoint directly using the <code>tokenServiceURL</code>, <code>clientId</code>, and <code>clientSecret</code> from the destination configuration. The resolved token is <strong>cached in a module-level variable</strong> with a thread-safe lock and proactively refreshed 60 seconds before its expiry time — so no request ever blocks on a token exchange mid-flight. For <strong>local development</strong>, credentials come from a <code>.env</code> file (TENANT_ID, CLIENT_ID, CLIENT_SECRET) or local JSON sidecar files, and the app authenticates directly against <code>login.microsoftonline.com/{tenant}/oauth2/v2.0/token</code> with scope <code>https://graph.microsoft.com/.default</code>, bypassing the BTP layer entirely. HANA credentials resolve from <code>hana_creds.json</code> or environment variables; S3 credentials from <code>s3_creds.json</code> or environment variables — the same code path handles all three environments without modification.</p>
+  <div class="card">
+    <div class="cred-grid">
+      <div>
+        <div class="cred-card" style="border-color:#2563eb44">
+          <div class="cred-title">☁️ SAP BTP Cloud Foundry (Production)</div>
+          <div class="cred-row"><span class="dot" style="background:#2563eb"></span><div><strong>VCAP_SERVICES</strong> → Destination Service binding (clientid, clientsecret, url, uri)</div></div>
+          <div class="cred-row"><span class="dot" style="background:#2563eb"></span><div>POST <code style="background:#1e293b;color:#bfdbfe;padding:.05rem .3rem;border-radius:3px;font-size:.68rem">{url}/oauth/token</code> → XSUAA Bearer token</div></div>
+          <div class="cred-row"><span class="dot" style="background:#2563eb"></span><div>GET <code style="background:#1e293b;color:#bfdbfe;padding:.05rem .3rem;border-radius:3px;font-size:.68rem">{uri}/destination-configuration/v1/destinations/BTP-CP_MS_Graph</code></div></div>
+          <div class="cred-row"><span class="dot" style="background:#2563eb"></span><div>Extracts <strong>MS Graph Bearer token</strong> from <code style="background:#1e293b;color:#bfdbfe;padding:.05rem .3rem;border-radius:3px;font-size:.68rem">authTokens[].value</code> (or falls back to calling Azure AD directly)</div></div>
+          <div class="cred-row"><span class="dot" style="background:#2563eb"></span><div>Token <strong>cached in memory</strong>, refreshed 60 s before expiry (thread-safe lock)</div></div>
+        </div>
+      </div>
+      <div>
+        <div class="cred-card" style="border-color:#16a34a44">
+          <div class="cred-title">💻 Local Development</div>
+          <div class="cred-row"><span class="dot" style="background:#16a34a"></span><div>Reads <strong>TENANT_ID</strong>, <strong>CLIENT_ID</strong>, <strong>CLIENT_SECRET</strong> from <code style="background:#1e293b;color:#bfdbfe;padding:.05rem .3rem;border-radius:3px;font-size:.68rem">.env</code></div></div>
+          <div class="cred-row"><span class="dot" style="background:#16a34a"></span><div>POST directly to Azure AD: <code style="background:#1e293b;color:#bfdbfe;padding:.05rem .3rem;border-radius:3px;font-size:.68rem">login.microsoftonline.com/{tenant}/oauth2/v2.0/token</code></div></div>
+          <div class="cred-row"><span class="dot" style="background:#16a34a"></span><div>Scope: <code style="background:#1e293b;color:#bfdbfe;padding:.05rem .3rem;border-radius:3px;font-size:.68rem">https://graph.microsoft.com/.default</code></div></div>
+          <div class="cred-row"><span class="dot" style="background:#16a34a"></span><div>HANA creds: <code style="background:#1e293b;color:#bfdbfe;padding:.05rem .3rem;border-radius:3px;font-size:.68rem">hana_creds.json</code> → env vars fallback</div></div>
+          <div class="cred-row"><span class="dot" style="background:#16a34a"></span><div>S3 creds: <code style="background:#1e293b;color:#bfdbfe;padding:.05rem .3rem;border-radius:3px;font-size:.68rem">s3_creds.json</code> → env vars fallback</div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+
+<!-- ═══════════════════════════════════════════════════════ SECTION 3: VECTORIZE PIPELINE -->
+<div>
+  <div class="section-label">3 — Vectorization Pipeline (core flow)</div>
+  <p class="section-desc"><strong>What this slide shows:</strong> The complete 10-step vectorization pipeline that executes on every call to <code>/vectorize</code>, <code>/vectorize/folder/{path}</code>, <code>/pipeline</code>, or their S3 and /tmp equivalents. <strong>Step 1 — Fetch Files:</strong> calls the MS Graph <code>/drives/{drive_id}/root/delta</code> endpoint (or <code>/folder:/delta</code> for folder-scoped runs), paginating through all <code>@odata.nextLink</code> pages until the full item list is collected; each item is flattened into a metadata dict (id, name, type, size, dates, web URL, download URL). <strong>Step 2 — Fetch Versions:</strong> for each file, a separate Graph call to <code>/drives/{id}/items/{id}/versions</code> retrieves the full version history with configurable inter-request throttling (default 1 s delay) to avoid Graph API rate limiting; returns version_id, size, modified_by, and a pre-authenticated download URL per version. <strong>Step 3 — Change Detection:</strong> the full SharePoint item list is filtered against HANA's <code>BRAIN_SP_FILES</code> table — only files whose <code>lastModifiedDateTime</code> differs from the stored <code>last_modified</code> (or that are not yet in HANA) are queued for processing; unchanged files are counted in <code>skipped_unchanged</code> and skipped with zero further I/O. <strong>Step 4 — Download:</strong> file bytes are streamed in 8 KB chunks via the Graph <code>BaseURL</code> (pre-authenticated download link) with a 300 s read timeout, up to 3 retry attempts, and exponential backoff (5 s → 15 s → 30 s); 429 responses honour the <code>Retry-After</code> header. <strong>Step 5 — Text Extraction:</strong> routed by file extension — <code>docx/doc</code> via python-docx / olefile, <code>xlsx/xls</code> via openpyxl / xlrd (cell values joined with " | " per row), <code>pdf</code> via pdfplumber, <code>pptx/ppt</code> via python-pptx / olefile, <code>eml/msg</code> via the email stdlib and extract-msg, <code>zip</code> via recursive extraction. <strong>Step 6 — Semantic Chunking:</strong> splits on newlines into paragraphs, accumulates greedily until the window reaches 512 tokens (~2 048 chars), then starts a new chunk; no overlap currently (tracked in backlog). <strong>Step 7 — Embedding:</strong> each chunk is encoded by <code>BAAI/bge-small-en-v1.5</code> with <code>normalize_embeddings=True</code>, producing a unit-norm 384-dimensional float32 vector; the model is lazy-loaded and cached in <code>/tmp/models/</code> across requests. <strong>Step 8 — HANA Upsert:</strong> <code>db.ingest()</code> writes three table rows per chunk via <code>UPSERT … WITH PRIMARY KEY</code> — one row each in BRAIN_SP_FILES, BRAIN_TEXT_CHUNKS, and BRAIN_VECTORS (using <code>TO_REAL_VECTOR()</code> to convert the float list to HANA's native binary format); <code>db.ingest_chunk_summary()</code> writes/updates one row in BRAIN_FILES_CHUNK. <strong>Step 9 — Write Outputs:</strong> chunk text, vector data, and raw base64 file bytes are appended to separate JSONL files in <code>/tmp</code> one record at a time — the pipeline never holds all chunks or vectors in memory simultaneously, so it scales to arbitrarily large libraries within the CF dyno's 1 536 MB RAM budget. <strong>Step 10 — Report &amp; Upload:</strong> a dark-theme HTML report is generated summarising vectorized count, chunk counts, skipped files, retry events, HANA table row counts, and output file sizes; both the report and the structured call log are uploaded to S3 under <code>runs/YYYYMMDD/</code> as non-fatal background operations.</p>
+  <div class="card">
+    <div class="steps">
+
+      <div class="step">
+        <div class="step-num">1</div>
+        <div class="step-title">Fetch Files</div>
+        <div class="step-detail">
+          Graph API delta endpoint<br/>
+          <code>/drives/{drive_id}/root/delta</code><br/>
+          Paginates via <code>@odata.nextLink</code><br/>
+          Flattens metadata per file<br/>
+          (id, name, type, size, dates, URLs)
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-num">2</div>
+        <div class="step-title">Fetch Versions</div>
+        <div class="step-detail">
+          Per-file call to<br/>
+          <code>/drives/{id}/items/{id}/versions</code><br/>
+          Throttled by <code>delay</code> param (default 1 s)<br/>
+          Returns version_id, size, modified_by, download_url
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-num">3</div>
+        <div class="step-title">Change Detection</div>
+        <div class="step-detail">
+          <code>db.get_modified_map()</code><br/>
+          Compares SP <code>lastModifiedDateTime</code><br/>
+          vs. HANA <code>BRAIN_SP_FILES.last_modified</code><br/>
+          Unchanged files are <strong>skipped</strong><br/>
+          (counted in <code>skipped_unchanged</code>)
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-num">4</div>
+        <div class="step-title">Download</div>
+        <div class="step-detail">
+          Streaming GET via <code>BaseURL</code><br/>
+          8 KB chunks, 300 s read timeout<br/>
+          Up to <strong>3 retry attempts</strong><br/>
+          Backoff: 5 s → 15 s → 30 s<br/>
+          Handles 429 Retry-After header
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-num">5</div>
+        <div class="step-title">Text Extraction</div>
+        <div class="step-detail">
+          By file extension:<br/>
+          <code>docx/dotx</code> python-docx<br/>
+          <code>doc</code> olefile / UTF-16-LE<br/>
+          <code>xlsx/xlsm</code> openpyxl<br/>
+          <code>xls</code> xlrd<br/>
+          <code>pdf</code> pdfplumber<br/>
+          <code>pptx/pptm</code> python-pptx<br/>
+          <code>rtf</code> striprtf<br/>
+          <code>eml</code> email stdlib<br/>
+          <code>msg</code> extract-msg<br/>
+          <code>csv</code> csv.DictReader<br/>
+          <code>json</code> json.dumps<br/>
+          <code>xml/html/htm</code> tag strip<br/>
+          <code>zip</code> recursive extraction<br/>
+          <code>txt/md/py/js/ts/yaml/sql/abap…</code> UTF-8 decode
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-num">6</div>
+        <div class="step-title">Semantic Chunking</div>
+        <div class="step-detail">
+          Splits by <code>\n</code> paragraphs<br/>
+          Max <strong>512 tokens</strong> per chunk<br/>
+          (~2 048 chars)<br/>
+          Accumulates paragraphs greedily<br/>
+          until window is full
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-num">7</div>
+        <div class="step-title">Embedding</div>
+        <div class="step-detail">
+          Model: <code>BAAI/bge-small-en-v1.5</code><br/>
+          <strong>384-dimensional</strong> float vectors<br/>
+          normalize_embeddings=<strong>True</strong><br/>
+          max_seq_length=<strong>512</strong><br/>
+          Lazy-loaded · cached in <code>/tmp/models</code>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-num">8</div>
+        <div class="step-title">HANA Upsert</div>
+        <div class="step-detail">
+          <code>db.ingest()</code> per file:<br/>
+          UPSERT → <code>BRAIN_SP_FILES</code><br/>
+          UPSERT → <code>BRAIN_TEXT_CHUNKS</code><br/>
+          UPSERT → <code>BRAIN_VECTORS</code> (<code>TO_REAL_VECTOR</code>)<br/>
+          <code>db.ingest_chunk_summary()</code> → <code>BRAIN_FILES_CHUNK</code>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-num">9</div>
+        <div class="step-title">Write Outputs</div>
+        <div class="step-detail">
+          Appends to JSONL per file<br/>
+          (never accumulates all in RAM)<br/>
+          <code>sp_chunks_*.jsonl</code><br/>
+          <code>sp_vectors_*.jsonl</code><br/>
+          <code>sp_files_chunk_*.jsonl</code>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-num">10</div>
+        <div class="step-title">Report &amp; Upload</div>
+        <div class="step-detail">
+          Generates dark-theme HTML report:<br/>
+          coverage, chunks, skips, retries,<br/>
+          HANA table stats, file sizes<br/>
+          Uploads HTML + call log to S3<br/>
+          under <code>runs/YYYYMMDD/</code>
+        </div>
+      </div>
+
+    </div>
+
+    <div class="callout" style="margin-top:1.25rem">
+      <strong>Memory strategy:</strong> content bytes are freed immediately after text extraction (<code>del content</code>), extracted text after chunking (<code>del text</code>), and per-file chunk/vector lists after HANA upsert. Only running counts are held across the loop — the pipeline can handle arbitrarily large libraries without OOM.
+    </div>
+
+    <!-- Source variants -->
+    <div style="margin-top:1rem;background:#0f172a;border:1px solid #334155;border-radius:8px;padding:1rem">
+      <div style="font-size:.68rem;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:.07em;margin-bottom:.7rem">Pipeline Variants by Ingest Source</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:.75rem">
+        <div style="background:#1e3a5f33;border:1px solid #2563eb33;border-radius:6px;padding:.75rem">
+          <div style="font-size:.72rem;font-weight:700;color:#bfdbfe;margin-bottom:.4rem">SharePoint</div>
+          <div style="font-size:.69rem;color:#94a3b8;line-height:1.6">Step 1: Graph <code style="background:#1e293b;color:#bfdbfe;padding:.02rem .2rem;border-radius:3px">/root/delta</code> or <code style="background:#1e293b;color:#bfdbfe;padding:.02rem .2rem;border-radius:3px">/folder:/delta</code><br/>Step 4: Streaming GET via <code style="background:#1e293b;color:#bfdbfe;padding:.02rem .2rem;border-radius:3px">BaseURL</code>, 3 retries<br/>Change key: <code style="background:#1e293b;color:#bfdbfe;padding:.02rem .2rem;border-radius:3px">lastModifiedDateTime</code><br/>Helper: <code style="background:#1e293b;color:#bfdbfe;padding:.02rem .2rem;border-radius:3px">_download_and_vectorize()</code></div>
+        </div>
+        <div style="background:#42200633;border:1px solid #d9770633;border-radius:6px;padding:.75rem">
+          <div style="font-size:.72rem;font-weight:700;color:#fef08a;margin-bottom:.4rem">S3 / Object Store</div>
+          <div style="font-size:.69rem;color:#94a3b8;line-height:1.6">Step 1: <code style="background:#1e293b;color:#fef08a;padding:.02rem .2rem;border-radius:3px">s3.list_objects(prefix)</code><br/>Step 4: <code style="background:#1e293b;color:#fef08a;padding:.02rem .2rem;border-radius:3px">s3.download_bytes(key)</code> (no retries)<br/>Change key: S3 <code style="background:#1e293b;color:#fef08a;padding:.02rem .2rem;border-radius:3px">last_modified</code> / ETag<br/>Helper: <code style="background:#1e293b;color:#fef08a;padding:.02rem .2rem;border-radius:3px">_download_and_vectorize_s3()</code></div>
+        </div>
+        <div style="background:#134e4a33;border:1px solid #0d948833;border-radius:6px;padding:.75rem">
+          <div style="font-size:.72rem;font-weight:700;color:#99f6e4;margin-bottom:.4rem">/tmp Filesystem</div>
+          <div style="font-size:.69rem;color:#94a3b8;line-height:1.6">Step 1: <code style="background:#1e293b;color:#99f6e4;padding:.02rem .2rem;border-radius:3px">os.listdir(folder)</code><br/>Step 4: <code style="background:#1e293b;color:#99f6e4;padding:.02rem .2rem;border-radius:3px">open(path, "rb").read()</code><br/>Change key: file <code style="background:#1e293b;color:#99f6e4;padding:.02rem .2rem;border-radius:3px">mtime</code> (ISO UTC)<br/>Helper: <code style="background:#1e293b;color:#99f6e4;padding:.02rem .2rem;border-radius:3px">_download_and_vectorize_tmp()</code></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+
+<!-- ═══════════════════════════════════════════════════════ SECTION 4: CHANGE DETECTION -->
+<div>
+  <div class="section-label">4 — Change Detection Detail</div>
+  <p class="section-desc"><strong>What this slide shows:</strong> The detailed mechanics of the change detection filter that prevents redundant re-vectorization. Before a single file is downloaded, <code>db.get_modified_map()</code> issues one query against <code>BRAIN_SP_FILES</code> (or the equivalent registry table for S3 / /tmp sources) to retrieve a Python dict mapping every known <code>item_id</code> to its stored <code>last_modified</code> timestamp string. Each item from the SharePoint item list is then evaluated against this map using <code>_filter_stale_items()</code>, which applies <code>_norm_ts()</code> to both timestamps — truncating fractional seconds — before comparing, to absorb the format differences between SharePoint's ISO 8601 strings and what was written by the previous run. The result is one of four outcomes: <strong>(1) UNCHANGED</strong> — timestamps match exactly after normalization; the file is appended to <code>skipped_unchanged</code> and no further I/O occurs for it in this run, not even a HANA read. <strong>(2) NEW</strong> — <code>item_id</code> is not present in the map at all, meaning HANA has never seen this file; it is queued for full download → extract → chunk → embed → upsert. <strong>(3) MODIFIED</strong> — <code>item_id</code> is known but the timestamp differs, meaning the file was edited in SharePoint after the last vectorize run; it is queued for re-vectorization and all existing chunk and vector rows for that <code>item_id</code> are overwritten atomically via <code>UPSERT … WITH PRIMARY KEY</code> — no orphaned stale chunks can exist. <strong>(4) DB UNREACHABLE</strong> — if <code>get_modified_map()</code> raises any exception (HANA connection failure, timeout, etc.), the filter falls back to processing every item in the list; this is intentional — it is safer to re-vectorize everything than to silently skip items whose change status cannot be determined. The right panel also shows how <code>item_id</code> is derived per ingest source: for SharePoint it is the MS Graph opaque string ID (e.g. <code>01HOEYRQ…</code>), for S3 it is the object's ETag value (MD5 of content), and for /tmp files it is <code>md5(abs_path)</code> — stable across container restarts because the path does not change. All three are stored in the same PK column, making the UPSERT logic and query layer fully source-agnostic.</p>
+  <div class="card" style="display:flex;gap:2rem;flex-wrap:wrap">
+    <div style="flex:1;min-width:260px">
+      <div class="vflow">
+        <div class="node"><div class="node-box col-blue">SharePoint Items<br/><span style="font-size:.65rem;font-weight:400">lastModifiedDateTime</span></div></div>
+        <div class="varrow"><svg viewBox="0 0 20 28"><path d="M10 2v20M4 18l6 8 6-8" stroke="#94a3b8" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg><div class="varrow-label">fetch per item</div></div>
+        <div class="node"><div class="node-box col-gray">_filter_stale_items()<br/><span style="font-size:.65rem;font-weight:400">timestamp compare</span></div></div>
+        <div class="varrow"><svg viewBox="0 0 20 28"><path d="M10 2v20M4 18l6 8 6-8" stroke="#94a3b8" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg><div class="varrow-label">db.get_modified_map()</div></div>
+        <div class="node"><div class="node-box col-teal">BRAIN_SP_FILES<br/><span style="font-size:.65rem;font-weight:400">last_modified column</span></div></div>
+      </div>
+    </div>
+    <div style="flex:2;min-width:280px;display:flex;flex-direction:column;gap:.85rem">
+      <div style="background:#0f172a;border:1px solid #1e293b;border-radius:8px;padding:1rem">
+        <div style="font-size:.72rem;font-weight:700;color:#bbf7d0;margin-bottom:.5rem">✓ Item is UNCHANGED → SKIP</div>
+        <div style="font-size:.75rem;color:#cbd5e1;line-height:1.6">
+          <code style="background:#1e293b;color:#bfdbfe;padding:.05rem .3rem;border-radius:3px;font-size:.68rem">_norm_ts(db_modified) == _norm_ts(sp_modified)</code><br/>
+          Timestamps are truncated to seconds to absorb fractional-second format differences.<br/>
+          File is counted in <strong style="color:#ffffff">skipped_unchanged</strong> and skipped entirely.
+        </div>
+      </div>
+      <div style="background:#0f172a;border:1px solid #1e293b;border-radius:8px;padding:1rem">
+        <div style="font-size:.72rem;font-weight:700;color:#bfdbfe;margin-bottom:.5rem">→ Item is NEW → QUEUE</div>
+        <div style="font-size:.75rem;color:#cbd5e1;line-height:1.6">
+          <code style="background:#1e293b;color:#bfdbfe;padding:.05rem .3rem;border-radius:3px;font-size:.68rem">db_modified is None</code> — item not in HANA yet.<br/>
+          Added to the processing queue.
+        </div>
+      </div>
+      <div style="background:#0f172a;border:1px solid #1e293b;border-radius:8px;padding:1rem">
+        <div style="font-size:.72rem;font-weight:700;color:#fed7aa;margin-bottom:.5rem">→ Item is MODIFIED → QUEUE</div>
+        <div style="font-size:.75rem;color:#cbd5e1;line-height:1.6">
+          Timestamps differ — item was updated in SharePoint since last ingest.<br/>
+          All existing chunks and vectors are <strong style="color:#ffffff">overwritten via UPSERT WITH PRIMARY KEY</strong>.
+        </div>
+      </div>
+      <div style="background:#0f172a;border:1px solid #1e293b;border-radius:8px;padding:1rem">
+        <div style="font-size:.72rem;font-weight:700;color:#fca5a5;margin-bottom:.5rem">⚠ DB unreachable → PROCESS ALL</div>
+        <div style="font-size:.75rem;color:#cbd5e1;line-height:1.6">
+          If <code style="background:#1e293b;color:#bfdbfe;padding:.05rem .3rem;border-radius:3px;font-size:.68rem">get_modified_map()</code> throws, the filter falls back to processing every item — no files are dropped silently.
+        </div>
+      </div>
+
+      <!-- item_id derivation by source -->
+      <div style="background:#0f172a;border:1px solid #334155;border-radius:8px;padding:1rem;margin-top:.15rem">
+        <div style="font-size:.7rem;font-weight:700;color:#93c5fd;margin-bottom:.6rem;text-transform:uppercase;letter-spacing:.05em">item_id Derivation by Source</div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(175px,1fr));gap:.5rem">
+          <div style="background:#1e3a5f33;border:1px solid #2563eb33;border-radius:6px;padding:.6rem .8rem">
+            <div style="font-size:.69rem;font-weight:700;color:#bfdbfe;margin-bottom:.25rem">SharePoint</div>
+            <div style="font-size:.67rem;color:#94a3b8;line-height:1.5">MS Graph item ID<br/>(opaque string — e.g. <code style="background:#1e293b;color:#bfdbfe;padding:.02rem .2rem;border-radius:3px">01ABCDEF…</code>)</div>
+          </div>
+          <div style="background:#42200633;border:1px solid #d9770633;border-radius:6px;padding:.6rem .8rem">
+            <div style="font-size:.69rem;font-weight:700;color:#fef08a;margin-bottom:.25rem">S3 / Object Store</div>
+            <div style="font-size:.67rem;color:#94a3b8;line-height:1.5">S3 ETag value<br/>(MD5 of object content)</div>
+          </div>
+          <div style="background:#134e4a33;border:1px solid #0d948833;border-radius:6px;padding:.6rem .8rem">
+            <div style="font-size:.69rem;font-weight:700;color:#99f6e4;margin-bottom:.25rem">/tmp Filesystem</div>
+            <div style="font-size:.67rem;color:#94a3b8;line-height:1.5"><code style="background:#1e293b;color:#99f6e4;padding:.02rem .2rem;border-radius:3px">md5(abs_path)</code><br/>(stable across restarts)</div>
+          </div>
+        </div>
+        <div style="font-size:.67rem;color:#64748b;margin-top:.5rem">All three map to the same PK columns in BRAIN_SP_FILES / BRAIN_TEXT_CHUNKS / BRAIN_VECTORS — source-agnostic UPSERT. Note: /tmp files write to BRAIN_SP_FILES (source=<code style="background:#1e293b;color:#94a3b8;padding:.02rem .2rem;border-radius:3px">'tmp'</code>), not a separate table. The change detection filter reads <code style="background:#1e293b;color:#94a3b8;padding:.02rem .2rem;border-radius:3px">BRAIN_SP_FILES.last_modified</code> — BRAIN_FILE_REGISTRY is written after ingest but is not the filter's data source.</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+
+<!-- ═══════════════════════════════════════════════════════ SECTION 5: HANA SCHEMA -->
+<div>
+  <div class="section-label">5 — SAP HANA Database Schema (BRAIN_* Tables)</div>
+  <p class="section-desc"><strong>What this slide shows:</strong> The complete schema of the seven HANA Cloud tables that back the RAG platform, all managed by the HDI container and prefixed under schema <code>BTP_CATALYST_PLATFORM_HDI_BTP_CATALYST_PLATFORM_DB_DEPLOYER_1</code>. <strong>BRAIN_SP_FILES</strong> is the SharePoint file registry — one row per file, keyed by <code>item_id</code> (MS Graph opaque ID). It stores filename, file type, extension, size in both human-readable and byte forms, the SharePoint web URL, the document path, the last-modified and created-by/modified-by timestamps, version count, and the ingest source flag. Three derived classification columns — <code>layer</code>, <code>layer_category</code>, and <code>deliverable_code</code> — are populated by <code>_flatten_item()</code> in api.py by splitting the SharePoint folder path on "/" and matching the segment at index 4 case-insensitively against a 15-entry <code>deliverables.json</code> lookup loaded at startup. <strong>BRAIN_TEXT_CHUNKS</strong> stores the raw extracted text per chunk as an NCLOB — one row per <code>(item_id, chunk_id)</code> pair — and is the table fetched by <code>/db/chunks/{item_id}</code> to return chunk text after a vector search identifies the relevant chunk IDs. <strong>BRAIN_VECTORS</strong> stores the 384-dimensional embeddings using HANA's native <code>REAL_VECTOR(384)</code> column type. Vectors are written via <code>TO_REAL_VECTOR(?)</code> from a JSON float array and read back as a binary blob in the format <code>[uint16 dims LE][uint16 padding][float32×384 LE]</code> = 1 540 bytes; the <code>/db/vectors/{item_id}</code> endpoint decodes this binary representation and returns plain float arrays, which have been validated to be byte-for-byte identical to locally re-computed embeddings (cosine similarity = 1.0). At query time, HANA evaluates <code>COSINE_SIMILARITY(vector_data, TO_REAL_VECTOR(?))</code> inside the engine for maximum performance. <strong>BRAIN_FILES_VERSIONS</strong> stores the full SharePoint version history per file — one row per <code>(item_id, version_id)</code> — capturing size, modified timestamp, modifier identity, and the pre-authenticated download URL for each version. <strong>BRAIN_FILES_CHUNK</strong> is a summary table with one row per file recording only the total chunk count, used by the analysis report. <strong>BRAIN_S3_FILES</strong> mirrors the SP file registry for S3-sourced objects, storing the S3 key, ETag, storage class, and timestamps. <strong>BRAIN_FILE_REGISTRY</strong> is a lightweight cross-source change-detection table keyed by <code>(item_id, source)</code> that records only <code>filename</code> and <code>modified_datetime</code> — its purpose is to back the incremental detection logic without requiring a full BRAIN_SP_FILES query for non-SharePoint sources.</p>
+  <div class="card">
+    <div class="db-grid">
+
+      <div class="db-table" style="border-color:#2563eb44">
+        <div class="db-table-name" style="color:#93c5fd">BRAIN_SP_FILES</div>
+        <div class="db-col"><span class="db-col-name db-pk">item_id</span><span class="db-col-type">NVARCHAR(500) PK</span></div>
+        <div class="db-col"><span class="db-col-name">filename</span><span class="db-col-type">NVARCHAR(500)</span></div>
+        <div class="db-col"><span class="db-col-name">file_type / extension</span><span class="db-col-type">NVARCHAR</span></div>
+        <div class="db-col"><span class="db-col-name">size_text / size_bytes</span><span class="db-col-type">NVARCHAR / BIGINT</span></div>
+        <div class="db-col"><span class="db-col-name">web_url / doc_path</span><span class="db-col-type">NVARCHAR(1000)</span></div>
+        <div class="db-col"><span class="db-col-name">last_modified</span><span class="db-col-type">NVARCHAR(50)</span></div>
+        <div class="db-col"><span class="db-col-name">created_date</span><span class="db-col-type">NVARCHAR(50)</span></div>
+        <div class="db-col"><span class="db-col-name">created_by / modified_by</span><span class="db-col-type">NVARCHAR(500)</span></div>
+        <div class="db-col"><span class="db-col-name">shared</span><span class="db-col-type">NVARCHAR(100)</span></div>
+        <div class="db-col"><span class="db-col-name">version_count</span><span class="db-col-type">INT</span></div>
+        <div class="db-col"><span class="db-col-name">source</span><span class="db-col-type">NVARCHAR(20) DEFAULT 'sharepoint'</span></div>
+        <div class="db-col"><span class="db-col-name" style="color:#bbf7d0">layer</span><span class="db-col-type">NVARCHAR(20)</span></div>
+        <div class="db-col"><span class="db-col-name" style="color:#bbf7d0">layer_category</span><span class="db-col-type">NVARCHAR(100)</span></div>
+        <div class="db-col"><span class="db-col-name" style="color:#bbf7d0">deliverable_code</span><span class="db-col-type">NVARCHAR(20)</span></div>
+        <div class="db-col"><span class="db-col-name">indexed_at / insert_dt</span><span class="db-col-type">TIMESTAMP</span></div>
+        <div style="margin-top:.5rem;font-size:.67rem;color:#94a3b8">SharePoint-source file registry — layer/category/deliverable derived from SP folder path</div>
+      </div>
+
+      <div class="db-table">
+        <div class="db-table-name">BRAIN_TEXT_CHUNKS</div>
+        <div class="db-col"><span class="db-col-name db-pk">item_id</span><span class="db-col-type">NVARCHAR(500) PK</span></div>
+        <div class="db-col"><span class="db-col-name db-pk">chunk_id</span><span class="db-col-type">INT PK</span></div>
+        <div class="db-col"><span class="db-col-name">chunk_data</span><span class="db-col-type">NCLOB</span></div>
+        <div class="db-col"><span class="db-col-name">filename</span><span class="db-col-type">NVARCHAR(500)</span></div>
+        <div class="db-col"><span class="db-col-name">source</span><span class="db-col-type">NVARCHAR(20)</span></div>
+        <div class="db-col"><span class="db-col-name">insert_dt</span><span class="db-col-type">TIMESTAMP</span></div>
+        <div style="margin-top:.5rem;font-size:.67rem;color:#94a3b8">Stores raw text per chunk for retrieval after vector search</div>
+      </div>
+
+      <div class="db-table">
+        <div class="db-table-name">BRAIN_VECTORS</div>
+        <div class="db-col"><span class="db-col-name db-pk">item_id</span><span class="db-col-type">NVARCHAR(500) PK</span></div>
+        <div class="db-col"><span class="db-col-name db-pk">chunk_id</span><span class="db-col-type">INT PK</span></div>
+        <div class="db-col"><span class="db-col-name">vector_data</span><span class="db-col-type">REAL_VECTOR(384)</span></div>
+        <div class="db-col"><span class="db-col-name">filename</span><span class="db-col-type">NVARCHAR(500)</span></div>
+        <div class="db-col"><span class="db-col-name">source</span><span class="db-col-type">NVARCHAR(20)</span></div>
+        <div class="db-col"><span class="db-col-name">insert_dt</span><span class="db-col-type">TIMESTAMP</span></div>
+        <div style="margin-top:.5rem;font-size:.67rem;color:#94a3b8">Searched via <code style="background:#1e293b;color:#ddd6fe;padding:.05rem .25rem;border-radius:3px">COSINE_SIMILARITY(vector_data, TO_REAL_VECTOR(?))</code></div>
+        <div style="margin-top:.4rem;font-size:.67rem;color:#64748b;line-height:1.5">Binary wire format (hdbcli): <code style="background:#1e293b;color:#94a3b8;padding:.02rem .25rem;border-radius:3px">[uint16 dims LE][uint16 pad][float32×384 LE]</code> = 1 540 bytes. Decode: <code style="background:#1e293b;color:#94a3b8;padding:.02rem .25rem;border-radius:3px">dims=unpack("&lt;H",b,0); floats=unpack(f"&lt;{dims}f",b,4)</code>.</div>
+      </div>
+
+      <div class="db-table">
+        <div class="db-table-name">BRAIN_FILES_VERSIONS</div>
+        <div class="db-col"><span class="db-col-name db-pk">item_id</span><span class="db-col-type">NVARCHAR(500) PK</span></div>
+        <div class="db-col"><span class="db-col-name db-pk">version_id</span><span class="db-col-type">NVARCHAR(50) PK</span></div>
+        <div class="db-col"><span class="db-col-name">file_size_text / size_bytes</span><span class="db-col-type">NVARCHAR / BIGINT</span></div>
+        <div class="db-col"><span class="db-col-name">last_modified_dt</span><span class="db-col-type">NVARCHAR(50)</span></div>
+        <div class="db-col"><span class="db-col-name">lastmodified_by</span><span class="db-col-type">NVARCHAR(500)</span></div>
+        <div class="db-col"><span class="db-col-name">download_url</span><span class="db-col-type">NCLOB</span></div>
+        <div class="db-col"><span class="db-col-name">version_count / filename</span><span class="db-col-type">INT / NVARCHAR</span></div>
+      </div>
+
+      <div class="db-table">
+        <div class="db-table-name">BRAIN_FILES_CHUNK</div>
+        <div class="db-col"><span class="db-col-name db-pk">item_id</span><span class="db-col-type">NVARCHAR(500) PK</span></div>
+        <div class="db-col"><span class="db-col-name">filename</span><span class="db-col-type">NVARCHAR(500)</span></div>
+        <div class="db-col"><span class="db-col-name">chunk_count</span><span class="db-col-type">INT</span></div>
+        <div class="db-col"><span class="db-col-name">source</span><span class="db-col-type">NVARCHAR(20)</span></div>
+        <div class="db-col"><span class="db-col-name">insert_dt</span><span class="db-col-type">TIMESTAMP</span></div>
+        <div style="margin-top:.5rem;font-size:.67rem;color:#94a3b8">Summary table — one row per file, stores total chunk count</div>
+      </div>
+
+      <div class="db-table" style="border-color:#d9770633">
+        <div class="db-table-name" style="color:#fef08a">BRAIN_S3_FILES</div>
+        <div class="db-col"><span class="db-col-name db-pk">item_id</span><span class="db-col-type">NVARCHAR(500) PK</span></div>
+        <div class="db-col"><span class="db-col-name">s3_key</span><span class="db-col-type">NVARCHAR(1000)</span></div>
+        <div class="db-col"><span class="db-col-name">filename</span><span class="db-col-type">NVARCHAR(500)</span></div>
+        <div class="db-col"><span class="db-col-name">extension</span><span class="db-col-type">NVARCHAR(20)</span></div>
+        <div class="db-col"><span class="db-col-name">size_text / size_bytes</span><span class="db-col-type">NVARCHAR / BIGINT</span></div>
+        <div class="db-col"><span class="db-col-name">etag</span><span class="db-col-type">NVARCHAR(100)</span></div>
+        <div class="db-col"><span class="db-col-name">storage_class</span><span class="db-col-type">NVARCHAR(50)</span></div>
+        <div class="db-col"><span class="db-col-name">last_modified</span><span class="db-col-type">NVARCHAR(50)</span></div>
+        <div class="db-col"><span class="db-col-name">indexed_at / insert_dt</span><span class="db-col-type">TIMESTAMP</span></div>
+        <div style="margin-top:.5rem;font-size:.67rem;color:#94a3b8">S3-source file registry — populated on every S3 vectorize run</div>
+      </div>
+
+      <div class="db-table" style="border-color:#0d948833">
+        <div class="db-table-name" style="color:#99f6e4">BRAIN_FILE_REGISTRY</div>
+        <div class="db-col"><span class="db-col-name db-pk">item_id</span><span class="db-col-type">NVARCHAR(500) PK</span></div>
+        <div class="db-col"><span class="db-col-name db-pk">source</span><span class="db-col-type">NVARCHAR(20) PK</span></div>
+        <div class="db-col"><span class="db-col-name">filename</span><span class="db-col-type">NVARCHAR(500)</span></div>
+        <div class="db-col"><span class="db-col-name">modified_datetime</span><span class="db-col-type">NVARCHAR(50)</span></div>
+        <div class="db-col"><span class="db-col-name">insert_datetime</span><span class="db-col-type">TIMESTAMP</span></div>
+        <div style="margin-top:.5rem;font-size:.67rem;color:#94a3b8">Written after every successful ingest (best-effort, non-fatal). Change detection filter <code style="background:#1e293b;color:#94a3b8;padding:.02rem .2rem;border-radius:3px">_filter_stale_items()</code> reads <strong style="color:#cbd5e1">BRAIN_SP_FILES.last_modified</strong>, not this table. /tmp files also write to BRAIN_SP_FILES (source=<code style="background:#1e293b;color:#99f6e4;padding:.02rem .2rem;border-radius:3px">'tmp'</code>), not a separate table.</div>
+      </div>
+
+    </div>
+
+    <!-- SP path derivation callout -->
+    <div style="margin-top:1.25rem;background:#0f172a;border:1px solid #2563eb44;border-radius:8px;padding:1rem">
+      <div style="font-size:.72rem;font-weight:700;color:#93c5fd;margin-bottom:.6rem">SharePoint Path → Column Derivation (<code style="background:#1e293b;color:#bfdbfe;padding:.02rem .3rem;border-radius:3px">_flatten_item()</code> in api.py)</div>
+      <div style="font-size:.73rem;color:#cbd5e1;line-height:1.6;margin-bottom:.75rem">
+        SP folder path format: <code style="background:#1e293b;color:#bfdbfe;padding:.05rem .3rem;border-radius:3px">/BTP-Brain/Layer3/ABB Files/Fit Gap</code><br/>
+        Split by <code style="background:#1e293b;color:#bfdbfe;padding:.05rem .3rem;border-radius:3px">"/"</code> → index 2 = <strong style="color:#bbf7d0">layer</strong>, index 3 = <strong style="color:#bbf7d0">layer_category</strong>, index 4 = deliverable segment matched against <code style="background:#1e293b;color:#fef08a;padding:.05rem .3rem;border-radius:3px">deliverables.json</code>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:.65rem;margin-bottom:.75rem">
+        <div style="background:#1e293b;border-radius:6px;padding:.6rem .8rem">
+          <div style="font-size:.68rem;font-weight:700;color:#bbf7d0;margin-bottom:.3rem">layer</div>
+          <code style="font-size:.67rem;color:#94a3b8">fp_parts[2]</code> — e.g. <code style="font-size:.67rem;color:#f8fafc">Layer3</code>
+        </div>
+        <div style="background:#1e293b;border-radius:6px;padding:.6rem .8rem">
+          <div style="font-size:.68rem;font-weight:700;color:#bbf7d0;margin-bottom:.3rem">layer_category</div>
+          <code style="font-size:.67rem;color:#94a3b8">fp_parts[3]</code> — e.g. <code style="font-size:.67rem;color:#f8fafc">ABB Files</code>
+        </div>
+        <div style="background:#1e293b;border-radius:6px;padding:.6rem .8rem">
+          <div style="font-size:.68rem;font-weight:700;color:#bbf7d0;margin-bottom:.3rem">deliverable_code</div>
+          <code style="font-size:.67rem;color:#94a3b8">fp_parts[4]</code> case-insensitive match → <code style="font-size:.67rem;color:#fef08a">rowId</code> from <code style="font-size:.67rem;color:#fef08a">deliverables.json</code>
+        </div>
+      </div>
+      <div style="background:#1e293b;border-radius:6px;padding:.7rem 1rem;font-size:.68rem;color:#94a3b8;line-height:1.7">
+        <strong style="color:#fef08a">deliverables.json</strong> — 15-entry constant map loaded at startup into <code style="color:#bfdbfe">_DELIVERABLE_LOOKUP</code> (<code style="color:#bfdbfe">short.lower() → rowId</code>).<br/>
+        Phases: <span style="color:#f8fafc">discover · prepare · explore · realize · deploy · run</span> &nbsp;·&nbsp;
+        Example entries: <code style="color:#f8fafc">DDA→A1</code> · <code style="color:#f8fafc">BDCQ→B3</code> · <code style="color:#f8fafc">F2S Workshops→C1</code> · <code style="color:#f8fafc">FDD→C5</code> · <code style="color:#f8fafc">TDD→D3</code> · <code style="color:#f8fafc">Cutover Plan→E1</code>
+      </div>
+    </div>
+
+    <!-- Query flow -->
+    <div style="margin-top:1.25rem;background:#0f172a;border:1px solid #1e293b;border-radius:8px;padding:1rem">
+      <div style="font-size:.72rem;font-weight:700;color:#c4b5fd;margin-bottom:.6rem">Vector Query Flow (POST /db/query)</div>
+      <div style="display:flex;align-items:center;gap:.75rem;flex-wrap:wrap;font-size:.75rem;color:#cbd5e1">
+        <span style="background:#1e293b;padding:.3rem .7rem;border-radius:6px;color:#ffffff">query text</span>
+        <span style="color:#94a3b8">→</span>
+        <span style="background:#1e293b;padding:.3rem .7rem;border-radius:6px;color:#ddd6fe">encode() → 384-dim vector</span>
+        <span style="color:#94a3b8">→</span>
+        <span style="background:#1e293b;padding:.3rem .7rem;border-radius:6px;color:#ddd6fe">COSINE_SIMILARITY JOIN</span>
+        <span style="color:#94a3b8">→</span>
+        <span style="background:#1e293b;padding:.3rem .7rem;border-radius:6px;color:#bbf7d0">TOP K results</span>
+        <span style="color:#94a3b8">→</span>
+        <span style="background:#1e293b;padding:.3rem .7rem;border-radius:6px;color:#ffffff">{item_id, filename, chunk_id, chunk_data, score}</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+
+<!-- ═══════════════════════════════════════════════════════ SECTION 6: OUTPUT FILES -->
+<div>
+  <div class="section-label">6 — Output Files Written to /tmp (DOWNLOAD_PATH)</div>
+  <p class="section-desc"><strong>What this slide shows:</strong> Every file the pipeline writes to <code>/tmp</code> (the CF container's ephemeral DOWNLOAD_PATH) during a vectorization run, organized by ingest source. <strong>SharePoint outputs (<code>sp_*</code>):</strong> <code>sp_chunks_&lt;ts&gt;.jsonl</code> — one JSON object per line, each containing item_id, chunk_id, chunk_data (raw extracted text), and filename; <code>sp_vectors_&lt;ts&gt;.jsonl</code> — one object per line with item_id, chunk_id, vector_id, and the 384-float vector_data array; <code>sp_files_chunk_&lt;ts&gt;.jsonl</code> — raw base64-encoded 8 KB download chunks per file, used by the <code>/rebuild</code> endpoint to reassemble the original file bytes on demand without hitting SharePoint again; <code>sp_root_data_&lt;ts&gt;.json</code> — the full flattened metadata array for every file fetched during the run; <code>sp_files_versions_&lt;ts&gt;.json</code> — version history for all root files; <code>sp_analysis_&lt;ts&gt;.html</code> — a self-contained dark-theme run report covering vectorized count, chunk totals, skipped files, retry events, HANA table row counts, and output file sizes; <code>&lt;endpoint&gt;_&lt;ts&gt;.log</code> — a structured per-call log capturing every download, extraction, chunk, upsert, and error event. <strong>S3 outputs (<code>s3_*</code>):</strong> <code>s3_chunks_&lt;ts&gt;.jsonl</code>, <code>s3_vectors_&lt;ts&gt;.jsonl</code>, <code>s3_files_chunks_&lt;ts&gt;.json</code> (8 KB base64 blocks per object), and <code>s3_root_data_&lt;ts&gt;.json</code> (S3 object metadata including ETag, storage class, and size). <strong>/tmp source outputs (<code>tmp_*</code>):</strong> <code>tmp_chunks_&lt;ts&gt;.jsonl</code>, <code>tmp_vectors_&lt;ts&gt;.jsonl</code>, <code>tmp_files_chunks_&lt;ts&gt;.json</code>, and <code>tmp_root_data_&lt;ts&gt;.json</code> with local file metadata (path, mtime, size). All JSONL files are written one record at a time using append mode — the pipeline never holds a full file's chunks or vectors in memory simultaneously. After every run, the HTML report and log are uploaded non-fatally to S3 under <code>runs/YYYYMMDD/</code>; failures produce a warning but do not abort the run. The Sentence Transformers model files are cached in <code>/tmp/models/</code> and persist across all requests for the lifetime of the CF dyno instance, avoiding the ~10 s model load overhead on every call.</p>
+  <div class="card">
+    <div class="file-grid">
+      <div class="file-item">
+        <div class="file-icon">📄</div>
+        <div>
+          <div class="file-name">sp_chunks_&lt;ts&gt;.jsonl</div>
+          <div class="file-desc">Text chunks — one JSON object per line.<br/>Fields: item_id, chunk_id, chunk_data, filename</div>
+        </div>
+      </div>
+      <div class="file-item">
+        <div class="file-icon">🔢</div>
+        <div>
+          <div class="file-name">sp_vectors_&lt;ts&gt;.jsonl</div>
+          <div class="file-desc">Embedding vectors — one JSON object per line.<br/>Fields: item_id, chunk_id, vector_id, vector_data (float array)</div>
+        </div>
+      </div>
+      <div class="file-item">
+        <div class="file-icon">🧩</div>
+        <div>
+          <div class="file-name">sp_files_chunk_&lt;ts&gt;.jsonl</div>
+          <div class="file-desc">Raw download chunks (base64) per file.<br/>Used by GET /rebuild to reassemble files without hitting SharePoint again</div>
+        </div>
+      </div>
+      <div class="file-item">
+        <div class="file-icon">📋</div>
+        <div>
+          <div class="file-name">sp_root_data_&lt;ts&gt;.json</div>
+          <div class="file-desc">Full file metadata array from SharePoint root delta.<br/>Written by /vectorize (GET) and /pipeline</div>
+        </div>
+      </div>
+      <div class="file-item">
+        <div class="file-icon">🕓</div>
+        <div>
+          <div class="file-name">sp_files_versions_&lt;ts&gt;.json</div>
+          <div class="file-desc">Version history array for all root files.<br/>Written by /vectorize (GET) and /pipeline</div>
+        </div>
+      </div>
+      <div class="file-item">
+        <div class="file-icon">📊</div>
+        <div>
+          <div class="file-name">sp_analysis_&lt;ts&gt;.html</div>
+          <div class="file-desc">Dark-theme HTML run report: vectorized count, chunks, skips, retries, HANA table stats, file sizes.<br/>Auto-uploaded to S3 under runs/YYYYMMDD/</div>
+        </div>
+      </div>
+      <div class="file-item">
+        <div class="file-icon">📝</div>
+        <div>
+          <div class="file-name">&lt;endpoint&gt;_&lt;ts&gt;.log</div>
+          <div class="file-desc">Per-call structured log — every download, extraction, chunk, upsert, and error.<br/>Auto-uploaded to S3; viewable via GET /analysis/{day}/{file}</div>
+        </div>
+      </div>
+      <div class="file-item">
+        <div class="file-icon">🤖</div>
+        <div>
+          <div class="file-name">/tmp/models/ (cached)</div>
+          <div class="file-desc">Sentence Transformers model files.<br/>Loaded once at first vectorize call. Persists across requests for the same dyno lifetime</div>
+        </div>
+      </div>
+
+      <!-- S3 source outputs -->
+      <div class="file-item" style="border-color:#d9770633;grid-column:1/-1;background:#0f172a">
+        <div style="font-size:.66rem;font-weight:700;color:#d97706;text-transform:uppercase;letter-spacing:.07em;margin-bottom:.1rem;width:100%">S3 Source Outputs &nbsp;<span style="font-weight:400;color:#64748b;font-size:.63rem">(prefix: s3_*)</span></div>
+      </div>
+      <div class="file-item" style="border-color:#d9770622">
+        <div class="file-icon">📄</div>
+        <div>
+          <div class="file-name">s3_chunks_&lt;ts&gt;.jsonl</div>
+          <div class="file-desc">Text chunks per S3 file.<br/>Fields: item_id, chunk_id, chunk_data, filename</div>
+        </div>
+      </div>
+      <div class="file-item" style="border-color:#d9770622">
+        <div class="file-icon">🔢</div>
+        <div>
+          <div class="file-name">s3_vectors_&lt;ts&gt;.jsonl</div>
+          <div class="file-desc">Embedding vectors per S3 file.<br/>Fields: item_id, chunk_id, vector_data (384-dim float[])</div>
+        </div>
+      </div>
+      <div class="file-item" style="border-color:#d9770622">
+        <div class="file-icon">🧩</div>
+        <div>
+          <div class="file-name">s3_files_chunks_&lt;ts&gt;.json</div>
+          <div class="file-desc">Raw download chunks (base64, 8 KB blocks).<br/>Fields: item_id, filename, chunk_id, chunk_data, chunk_size</div>
+        </div>
+      </div>
+      <div class="file-item" style="border-color:#d9770622">
+        <div class="file-icon">📋</div>
+        <div>
+          <div class="file-name">s3_root_data_&lt;ts&gt;.json</div>
+          <div class="file-desc">S3 object metadata per file.<br/>Fields: item_id, filename, chunk_count, key, size, last_modified, etag, storage_class</div>
+        </div>
+      </div>
+
+      <!-- /tmp source outputs -->
+      <div class="file-item" style="border-color:#0d948833;grid-column:1/-1;background:#0f172a">
+        <div style="font-size:.66rem;font-weight:700;color:#0d9488;text-transform:uppercase;letter-spacing:.07em;margin-bottom:.1rem;width:100%">/tmp Source Outputs &nbsp;<span style="font-weight:400;color:#64748b;font-size:.63rem">(prefix: tmp_*)</span></div>
+      </div>
+      <div class="file-item" style="border-color:#0d948822">
+        <div class="file-icon">📄</div>
+        <div>
+          <div class="file-name">tmp_chunks_&lt;ts&gt;.jsonl</div>
+          <div class="file-desc">Text chunks per /tmp file.<br/>Fields: item_id, chunk_id, chunk_data, filename</div>
+        </div>
+      </div>
+      <div class="file-item" style="border-color:#0d948822">
+        <div class="file-icon">🔢</div>
+        <div>
+          <div class="file-name">tmp_vectors_&lt;ts&gt;.jsonl</div>
+          <div class="file-desc">Embedding vectors per /tmp file.<br/>Fields: item_id, chunk_id, vector_data (384-dim float[])</div>
+        </div>
+      </div>
+      <div class="file-item" style="border-color:#0d948822">
+        <div class="file-icon">🧩</div>
+        <div>
+          <div class="file-name">tmp_files_chunks_&lt;ts&gt;.json</div>
+          <div class="file-desc">Raw file chunks (base64, 8 KB blocks).<br/>Fields: item_id, filename, chunk_id, chunk_data, chunk_size</div>
+        </div>
+      </div>
+      <div class="file-item" style="border-color:#0d948822">
+        <div class="file-icon">📋</div>
+        <div>
+          <div class="file-name">tmp_root_data_&lt;ts&gt;.json</div>
+          <div class="file-desc">Local file metadata per file.<br/>Fields: item_id, filename, chunk_count, path, size, last_modified</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+
+<!-- ═══════════════════════════════════════════════════════ SECTION 7: API ROUTES -->
+<div>
+  <div class="section-label">7 — API Route Reference</div>
+  <p class="section-desc"><strong>What this slide shows:</strong> The complete route catalog for the deployed <code>sharepoint-rag-api</code> FastAPI application, grouped by functional area and annotated with security guards. <strong>System:</strong> <code>GET /health</code> is the CF health probe — it returns app status plus the resolved <code>site_id</code> and <code>drive_id</code> confirming the Graph connection is live; it runs on a 120 s invocation timeout. Five <code>/debug/*</code> routes expose credential diagnostics, the HANA connection, the S3 ping, and <code>/tmp</code> filesystem browsing — all gated behind <code>ENABLE_DEBUG=true</code>. <strong>Files:</strong> <code>GET /files</code> fetches all root files via Graph delta and upserts metadata to BRAIN_SP_FILES without vectorizing; <code>GET /files/versions</code> adds version history retrieval; <code>GET /files/all</code> lists files from any folder path without HANA ingest; <code>GET /files/search</code> runs a Graph filename search; <code>POST /download</code> streams a file by BaseURL back to the caller and saves base64 chunks; <code>GET|POST /rebuild</code> reassembles a file from stored chunks. <strong>RAG — SharePoint:</strong> <code>GET /vectorize</code> runs the full root pipeline; <code>GET /vectorize/folder/{path}</code> scopes it to a subfolder; <code>POST /vectorize</code> accepts a caller-supplied item list; <code>POST /vectorize/item</code> processes a single item by ID; <code>POST /pipeline</code> is the most complete variant — it always fetches versions before vectorizing and saves both root data and versions JSON files. <strong>RAG — S3:</strong> POST and GET variants for prefix-scoped runs, single-object runs, and download-only (skip_ingest) runs. <strong>RAG — /tmp:</strong> POST and GET variants for folder-scoped and single-file runs against the local filesystem. <strong>Analysis:</strong> list, latest, and dated file access for HTML reports and log files stored in S3. <strong>Storage:</strong> <code>/tmp</code> folder/file browser with conditional delete gated by <code>ENABLE_DESTRUCTIVE</code>. <strong>S3:</strong> object listing, head metadata, streaming download, presigned GET and POST URL generation, single-file and bulk upload from <code>/tmp</code>, and object deletion. <strong>Database (<code>/db/*</code>):</strong> <code>POST /db/query</code> runs vector search (encode query → COSINE_SIMILARITY → top-K results with chunk text); <code>GET /db/files</code> lists all BRAIN_SP_FILES rows; <code>GET /db/chunks/{item_id}</code> returns all text chunks for a file; <code>GET /db/vectors/{item_id}</code> reads raw <code>REAL_VECTOR(384)</code> binary from BRAIN_VECTORS and decodes it to float arrays (validated: cosine_sim = 1.0 vs. locally re-computed embeddings); <code>POST /db/sql</code> executes any validated SELECT query against HANA with full JOIN support and parameterized <code>?</code> placeholders, blocked by a multi-layer SQL injection guard; <code>GET /db/versions</code> and <code>/db/chunk-summary</code> serve version and summary data; <code>DELETE /db/item/{item_id}</code> wipes all five BRAIN table rows for a file (guarded); <code>POST /db/init</code> and <code>/db/migrate</code> manage schema; <code>POST /db/backup</code> dumps all tables to JSONL and uploads to S3. <code>POST /db/drop</code> and <code>POST /db/truncate</code> are gated by <code>ENABLE_DESTRUCTIVE</code> and additionally require <code>?confirm=true</code> — disabled by default, re-enabled via <code>cf set-env ENABLE_DESTRUCTIVE true &amp;&amp; cf restart</code>.</p>
+  <div class="card">
+
+    <!-- Security legend -->
+    <div style="background:#0f172a;border:1px solid #334155;border-radius:8px;padding:.7rem 1.1rem;margin-bottom:1.25rem;display:flex;gap:1.5rem;align-items:center;flex-wrap:wrap">
+      <span style="font-size:.68rem;color:#94a3b8;font-weight:700;text-transform:uppercase;letter-spacing:.06em">Access Guards</span>
+      <span style="display:flex;align-items:center;gap:.4rem"><span class="guard-badge guard-debug">&#128274; ENABLE_DEBUG</span><span style="font-size:.68rem;color:#cbd5e1">routes return 403 unless <code style="background:#1e293b;color:#fef08a;padding:.02rem .3rem;border-radius:3px">ENABLE_DEBUG=true</code> + <code style="background:#1e293b;color:#bfdbfe;padding:.02rem .3rem;border-radius:3px">cf restart</code></span></span>
+      <span style="display:flex;align-items:center;gap:.4rem"><span class="guard-badge guard-destr">&#128274; ENABLE_DESTRUCTIVE</span><span style="font-size:.68rem;color:#cbd5e1">routes return 403 unless <code style="background:#1e293b;color:#fca5a5;padding:.02rem .3rem;border-radius:3px">ENABLE_DESTRUCTIVE=true</code> + <code style="background:#1e293b;color:#bfdbfe;padding:.02rem .3rem;border-radius:3px">cf restart</code></span></span>
+    </div>
+
+    <div class="route-group">
+      <div class="route-group-title">System</div>
+      <div class="route-row"><span class="method GET">GET</span><span class="route-path">/health</span><span class="route-desc">App status + SharePoint site_id / drive_id. Used by CF health probe.</span></div>
+      <div class="route-row"><span class="method GET">GET</span><span class="route-path">/debug/destination</span><span class="route-desc">Step-by-step BTP Destination Service → MS Graph token chain diagnostic.</span><span class="guard-badge guard-debug">&#128274; ENABLE_DEBUG</span></div>
+      <div class="route-row"><span class="method GET">GET</span><span class="route-path">/debug/db</span><span class="route-desc">HANA connection test — host, user, schema, DB version.</span><span class="guard-badge guard-debug">&#128274; ENABLE_DEBUG</span></div>
+      <div class="route-row"><span class="method GET">GET</span><span class="route-path">/debug/s3</span><span class="route-desc">S3 credential source + bucket ping diagnostic.</span><span class="guard-badge guard-debug">&#128274; ENABLE_DEBUG</span></div>
+      <div class="route-row"><span class="method GET">GET</span><span class="route-path">/debug/tmp?path=</span><span class="route-desc">Browse /tmp filesystem one level at a time.</span><span class="guard-badge guard-debug">&#128274; ENABLE_DEBUG</span></div>
+      <div class="route-row"><span class="method GET">GET</span><span class="route-path">/debug/tmp/preview?path=</span><span class="route-desc">Preview text file contents from /tmp (head/tail support).</span><span class="guard-badge guard-debug">&#128274; ENABLE_DEBUG</span></div>
+    </div>
+
+    <div class="route-group">
+      <div class="route-group-title">Files</div>
+      <div class="route-row"><span class="method GET">GET</span><span class="route-path">/files</span><span class="route-desc">Fetch all root files via Graph delta + upsert metadata to HANA BRAIN_SP_FILES (no vectorization).</span></div>
+      <div class="route-row"><span class="method GET">GET</span><span class="route-path">/files/versions?delay=</span><span class="route-desc">Same as /files + version history per file. Slow for large libraries.</span></div>
+      <div class="route-row"><span class="method GET">GET</span><span class="route-path">/files/all?path=&amp;use_delta=</span><span class="route-desc">List files from a specific folder path (or root). No HANA ingest.</span></div>
+      <div class="route-row"><span class="method GET">GET</span><span class="route-path">/files/search?name=</span><span class="route-desc">Graph search by filename. No HANA ingest.</span></div>
+      <div class="route-row"><span class="method POST">POST</span><span class="route-path">/download</span><span class="route-desc">Download a SharePoint file by BaseURL, stream back to caller. Saves base64 chunks to files_list_chunk.json.</span></div>
+      <div class="route-row"><span class="method GET">GET</span><span class="route-path">/rebuild?filename=&amp;save_dir=</span><span class="route-desc">Reassemble a file from stored base64 chunks in files_list_chunk.json.</span></div>
+      <div class="route-row"><span class="method POST">POST</span><span class="route-path">/rebuild</span><span class="route-desc">Reassemble a file from chunk list supplied in the request body.</span></div>
+    </div>
+
+    <div class="route-group">
+      <div class="route-group-title">RAG — SharePoint Vectorization</div>
+      <div class="route-row"><span class="method GET">GET</span><span class="route-path">/vectorize?delay=&amp;save_dir=</span><span class="route-desc">Full pipeline: all root files → change detection → download → extract → chunk → embed → upsert. Generates HTML report.</span></div>
+      <div class="route-row"><span class="method GET">GET</span><span class="route-path">/vectorize/folder/{path}?delay=&amp;use_delta=</span><span class="route-desc">Same pipeline scoped to a SharePoint subfolder.</span></div>
+      <div class="route-row"><span class="method POST">POST</span><span class="route-path">/vectorize</span><span class="route-desc">Vectorize a caller-supplied item list (or auto-fetch root if items omitted).</span></div>
+      <div class="route-row"><span class="method POST">POST</span><span class="route-path">/vectorize/item</span><span class="route-desc">Vectorize a single item by item_id. Fetches metadata + versions first.</span></div>
+      <div class="route-row"><span class="method POST">POST</span><span class="route-path">/pipeline</span><span class="route-desc">Most complete pipeline — always fetches versions before vectorizing. Saves root data + versions JSON.</span></div>
+    </div>
+
+    <div class="route-group">
+      <div class="route-group-title" style="color:#fef08a">RAG — S3 Vectorization</div>
+      <div class="route-row"><span class="method POST">POST</span><span class="route-path">/vectorize/s3</span><span class="route-desc">Scan an S3 prefix, apply change detection, extract → chunk → embed → upsert. Body: <code style="background:#1e293b;color:#fef08a;padding:.02rem .25rem;border-radius:3px">{ prefix, force, extensions[] }</code></span></div>
+      <div class="route-row"><span class="method GET">GET</span><span class="route-path">/vectorize/s3/folder/{path}?force=&amp;extensions=</span><span class="route-desc">Same pipeline — folder path in URL. Path appended with trailing slash before S3 list.</span></div>
+      <div class="route-row"><span class="method GET">GET</span><span class="route-path">/vectorize/s3/folder/{path}/download</span><span class="route-desc">Download + extract S3 folder as a zip (skip_ingest=true — no HANA write). For local extraction only.</span></div>
+      <div class="route-row"><span class="method POST">POST</span><span class="route-path">/vectorize/s3/item</span><span class="route-desc">Vectorize a single S3 object by key. Body: <code style="background:#1e293b;color:#fef08a;padding:.02rem .25rem;border-radius:3px">{ key, force }</code></span></div>
+    </div>
+
+    <div class="route-group">
+      <div class="route-group-title" style="color:#99f6e4">RAG — /tmp Vectorization</div>
+      <div class="route-row"><span class="method POST">POST</span><span class="route-path">/vectorize/tmp</span><span class="route-desc">Scan a local folder, apply change detection, extract → chunk → embed → upsert. Body: <code style="background:#1e293b;color:#99f6e4;padding:.02rem .25rem;border-radius:3px">{ folder, force, extensions[] }</code></span></div>
+      <div class="route-row"><span class="method GET">GET</span><span class="route-path">/vectorize/tmp/{folder_path}?force=&amp;extensions=</span><span class="route-desc">Same pipeline — path appended to <code style="background:#1e293b;color:#99f6e4;padding:.02rem .25rem;border-radius:3px">/tmp/</code> automatically.</span></div>
+      <div class="route-row"><span class="method POST">POST</span><span class="route-path">/vectorize/tmp/item</span><span class="route-desc">Vectorize a single local file by absolute path. Body: <code style="background:#1e293b;color:#99f6e4;padding:.02rem .25rem;border-radius:3px">{ path, force }</code></span></div>
+    </div>
+
+    <div class="route-group">
+      <div class="route-group-title">Analysis</div>
+      <div class="route-row"><span class="method GET">GET</span><span class="route-path">/analysis</span><span class="route-desc">List all HTML reports and log files in dated output folders.</span></div>
+      <div class="route-row"><span class="method GET">GET</span><span class="route-path">/analysis/latest</span><span class="route-desc">Render the most recent analysis HTML report in the browser.</span></div>
+      <div class="route-row"><span class="method GET">GET</span><span class="route-path">/analysis/db</span><span class="route-desc">Live DB metrics dashboard — row counts and stats for all HANA BRAIN tables, rendered as HTML in the browser.</span></div>
+      <div class="route-row"><span class="method GET">GET</span><span class="route-path">/analysis/{day}/{filename}</span><span class="route-desc">Render a specific report or log file.</span></div>
+    </div>
+
+    <div class="route-group">
+      <div class="route-group-title">Storage</div>
+      <div class="route-row"><span class="method GET">GET</span><span class="route-path">/storage</span><span class="route-desc">List all files under /tmp grouped by date folder.</span></div>
+      <div class="route-row"><span class="method GET">GET</span><span class="route-path">/storage/{day}</span><span class="route-desc">Browse a date folder as a dark-theme HTML page.</span></div>
+      <div class="route-row"><span class="method GET">GET</span><span class="route-path">/storage/{day}/{filename}?download=</span><span class="route-desc">View or download a specific output file. Renders .log/.html in browser.</span></div>
+      <div class="route-row"><span class="method DELETE">DEL</span><span class="route-path">/storage/{day}/{filename}</span><span class="route-desc">Delete a single output file from /tmp.</span><span class="guard-badge guard-destr">&#128274; ENABLE_DESTRUCTIVE</span></div>
+      <div class="route-row"><span class="method DELETE">DEL</span><span class="route-path">/storage/{day}</span><span class="route-desc">Delete all files in a date folder and remove the folder itself.</span><span class="guard-badge guard-destr">&#128274; ENABLE_DESTRUCTIVE</span></div>
+    </div>
+
+    <div class="route-group">
+      <div class="route-group-title">S3 / Object Store</div>
+      <div class="route-row"><span class="method GET">GET</span><span class="route-path">/s3/objects?prefix=&amp;max_keys=</span><span class="route-desc">List objects in the S3 bucket with optional prefix filter.</span></div>
+      <div class="route-row"><span class="method GET">GET</span><span class="route-path">/s3/object/{key}/metadata</span><span class="route-desc">Get head-object metadata (size, content-type, ETag, last-modified).</span></div>
+      <div class="route-row"><span class="method GET">GET</span><span class="route-path">/s3/object/{key}</span><span class="route-desc">Stream-download an S3 object through the API.</span></div>
+      <div class="route-row"><span class="method GET">GET</span><span class="route-path">/s3/presigned/{key}?expiry=</span><span class="route-desc">Generate a presigned GET URL for direct client download.</span></div>
+      <div class="route-row"><span class="method POST">POST</span><span class="route-path">/s3/presigned-upload</span><span class="route-desc">Generate a presigned POST policy for direct browser-to-S3 upload.</span></div>
+      <div class="route-row"><span class="method POST">POST</span><span class="route-path">/s3/upload-storage-file</span><span class="route-desc">Upload a single /tmp file to S3 by day + filename.</span></div>
+      <div class="route-row"><span class="method POST">POST</span><span class="route-path">/s3/upload-storage-folder/{day}</span><span class="route-desc">Bulk upload every file in a /tmp date folder to S3.</span></div>
+      <div class="route-row"><span class="method DELETE">DEL</span><span class="route-path">/s3/object/{key}</span><span class="route-desc">Delete a single S3 object.</span><span class="guard-badge guard-destr">&#128274; ENABLE_DESTRUCTIVE</span></div>
+      <div class="route-row"><span class="method DELETE">DEL</span><span class="route-path">/s3/objects</span><span class="route-desc">Bulk delete up to 1 000 S3 objects in one call.</span><span class="guard-badge guard-destr">&#128274; ENABLE_DESTRUCTIVE</span></div>
+    </div>
+
+    <div class="route-group">
+      <div class="route-group-title">Database (/db/* via db.router)</div>
+      <div class="route-row"><span class="method POST">POST</span><span class="route-path">/db/query</span><span class="route-desc">Semantic vector search — encode query text → COSINE_SIMILARITY on BRAIN_VECTORS → top K results with chunk text.</span></div>
+      <div class="route-row"><span class="method GET">GET</span><span class="route-path">/db/files</span><span class="route-desc">List all rows in BRAIN_SP_FILES ordered by indexed_at desc.</span></div>
+      <div class="route-row"><span class="method GET">GET</span><span class="route-path">/db/chunks/{item_id}</span><span class="route-desc">Get all text chunks for a specific item_id.</span></div>
+      <div class="route-row"><span class="method GET">GET</span><span class="route-path">/db/vectors/{item_id}</span><span class="route-desc">Read raw <code style="background:#1e293b;color:#ddd6fe;padding:.02rem .25rem;border-radius:3px">REAL_VECTOR(384)</code> column from BRAIN_VECTORS. Decodes HANA binary format <code style="background:#1e293b;color:#94a3b8;padding:.02rem .25rem;border-radius:3px">[uint16 dims][uint16 padding][float32×384]</code> → returns 384-float array per chunk. Validated: cosine_sim=1.0 vs. locally re-computed embeddings.</span></div>
+      <div class="route-row"><span class="method POST">POST</span><span class="route-path">/db/sql</span><span class="route-desc">Run a validated SELECT-only query against HANA. Body: <code style="background:#1e293b;color:#bfdbfe;padding:.02rem .25rem;border-radius:3px">{ "sql": "SELECT ...", "params": [], "limit": 100 }</code>. Guards: SELECT-only · no <code style="background:#1e293b;color:#fca5a5;padding:.02rem .25rem;border-radius:3px">--</code> / <code style="background:#1e293b;color:#fca5a5;padding:.02rem .25rem;border-radius:3px">/* */</code> comments · no semicolons · blocked keywords (INSERT / UPDATE / DELETE / DROP / CREATE / ALTER / TRUNCATE / EXEC / GRANT / REVOKE / MERGE / CALL / LOAD). Supports full SELECT with JOINs, subqueries, and <code style="background:#1e293b;color:#bfdbfe;padding:.02rem .25rem;border-radius:3px">?</code> parameterized values.</span></div>
+      <div class="route-row"><span class="method GET">GET</span><span class="route-path">/db/versions</span><span class="route-desc">List all rows in BRAIN_FILES_VERSIONS.</span></div>
+      <div class="route-row"><span class="method GET">GET</span><span class="route-path">/db/versions/{item_id}</span><span class="route-desc">Get version history for a specific file from BRAIN_FILES_VERSIONS.</span></div>
+      <div class="route-row"><span class="method GET">GET</span><span class="route-path">/db/chunk-summary</span><span class="route-desc">List all rows in BRAIN_FILES_CHUNK (one row per file with chunk count).</span></div>
+      <div class="route-row"><span class="method GET">GET</span><span class="route-path">/db/chunk-summary/{item_id}</span><span class="route-desc">Get chunk count summary for a specific file.</span></div>
+      <div class="route-row"><span class="method GET">GET</span><span class="route-path">/db/file-registry</span><span class="route-desc">List BRAIN_FILE_REGISTRY rows. Query params: <code style="background:#1e293b;color:#bfdbfe;padding:.02rem .25rem;border-radius:3px">source</code>, <code style="background:#1e293b;color:#bfdbfe;padding:.02rem .25rem;border-radius:3px">limit</code>, <code style="background:#1e293b;color:#bfdbfe;padding:.02rem .25rem;border-radius:3px">offset</code>.</span></div>
+      <div class="route-row"><span class="method DELETE">DEL</span><span class="route-path">/db/item/{item_id}</span><span class="route-desc">Delete all data for a file across all 5 BRAIN tables.</span><span class="guard-badge guard-destr">&#128274; ENABLE_DESTRUCTIVE</span></div>
+      <div class="route-row"><span class="method POST">POST</span><span class="route-path">/db/init</span><span class="route-desc">Create all BRAIN tables if they don't exist (idempotent).</span></div>
+      <div class="route-row"><span class="method POST">POST</span><span class="route-path">/db/migrate</span><span class="route-desc">Apply schema migrations (add source column etc.) — safe to re-run.</span></div>
+      <div class="route-row"><span class="method POST">POST</span><span class="route-path">/db/truncate?confirm=true</span><span class="route-desc">Delete all rows from all BRAIN tables. Disabled by default — requires <code style="background:#1e293b;color:#fca5a5;padding:.02rem .25rem;border-radius:3px">ENABLE_DESTRUCTIVE=true</code> + <code style="background:#1e293b;color:#bfdbfe;padding:.02rem .25rem;border-radius:3px">cf restart</code> to re-enable.</span><span class="guard-badge guard-destr">&#128274; ENABLE_DESTRUCTIVE</span></div>
+      <div class="route-row"><span class="method POST">POST</span><span class="route-path">/db/drop?confirm=true</span><span class="route-desc">Drop all BRAIN tables entirely. Disabled by default — requires <code style="background:#1e293b;color:#fca5a5;padding:.02rem .25rem;border-radius:3px">ENABLE_DESTRUCTIVE=true</code> + <code style="background:#1e293b;color:#bfdbfe;padding:.02rem .25rem;border-radius:3px">cf restart</code> to re-enable.</span><span class="guard-badge guard-destr">&#128274; ENABLE_DESTRUCTIVE</span></div>
+      <div class="route-row"><span class="method POST">POST</span><span class="route-path">/db/backup</span><span class="route-desc">Dump all BRAIN tables to JSONL and upload to S3. Body: <code style="background:#1e293b;color:#bfdbfe;padding:.02rem .25rem;border-radius:3px">{ "s3_dir": "backups/2026-09-08", "include_vectors": false }</code>. Writes <code style="background:#1e293b;color:#bfdbfe;padding:.02rem .25rem;border-radius:3px">brain_sp_files.jsonl</code>, <code style="background:#1e293b;color:#bfdbfe;padding:.02rem .25rem;border-radius:3px">brain_s3_files.jsonl</code>, <code style="background:#1e293b;color:#bfdbfe;padding:.02rem .25rem;border-radius:3px">brain_text_chunks.jsonl</code>, <code style="background:#1e293b;color:#bfdbfe;padding:.02rem .25rem;border-radius:3px">brain_file_registry.jsonl</code>, and optionally <code style="background:#1e293b;color:#bfdbfe;padding:.02rem .25rem;border-radius:3px">brain_vectors.jsonl</code>.</span></div>
+    </div>
+
+  </div>
+</div>
+
+
+<!-- ═══════════════════════════════════════════════════════ SECTION 8: SECURITY CONTROLS -->
+<div>
+  <div class="section-label">8 — Security Controls</div>
+  <p class="section-desc"><strong>What this slide shows:</strong> The two environment-variable security gates that protect sensitive diagnostics and irreversible data operations, plus the separate permanent-disable mechanism for the most destructive endpoints. <strong>ENABLE_DEBUG</strong> guards five diagnostic routes that should never be exposed in an unsupervised production environment: <code>GET /debug/destination</code> walks through the full BTP Destination Service → XSUAA → MS Graph token chain step-by-step and prints intermediate responses (useful for diagnosing auth failures); <code>GET /debug/db</code> tests the HANA connection and returns host, user, schema, and DB version; <code>GET /debug/s3</code> shows the credential source and bucket ping result; <code>GET /debug/tmp</code> and <code>GET /debug/tmp/preview</code> let you browse and read any file inside the CF container's <code>/tmp</code> filesystem — a powerful but sensitive capability. When <code>ENABLE_DEBUG</code> is false (the default), all five return HTTP 403 with a message indicating the flag must be set. <strong>ENABLE_DESTRUCTIVE</strong> guards seven routes that delete or wipe data: <code>DELETE /storage/{day}/{filename}</code> and <code>DELETE /storage/{day}</code> remove output files from <code>/tmp</code>; <code>DELETE /s3/object/{key}</code> and <code>DELETE /s3/objects</code> delete S3 objects (the bulk delete removes up to 1 000 in one call); <code>DELETE /db/item/{item_id}</code> removes all five BRAIN table rows for a given file; <code>POST /db/truncate?confirm=true</code> deletes all rows from all BRAIN tables; <code>POST /db/drop?confirm=true</code> drops all BRAIN tables entirely. The drop and truncate routes require an additional explicit <code>?confirm=true</code> query parameter on top of the flag — two deliberate steps to prevent accidental execution. When <code>ENABLE_DESTRUCTIVE</code> is false, all seven return HTTP 403. <strong>Key design decisions:</strong> both flags are evaluated at <em>request time</em> via <code>os.getenv()</code>, not cached at startup — so toggling requires only a <code>cf restart</code> (~30 seconds) rather than a full restage or redeploy. Both are set to <code>false</code> in <code>manifest.yml</code> as explicit defaults, which means every <code>cf push</code> automatically resets them to off — a developer cannot accidentally leave a destructive mode on after deploying. Blocked routes remain visible in <code>/docs</code> so the API contract stays fully documented. To re-enable drop or truncate: <code>cf set-env sharepoint-rag-api ENABLE_DESTRUCTIVE true</code> → <code>cf restart sharepoint-rag-api</code> → call with <code>?confirm=true</code> → disable again when done.</p>
+  <div class="card">
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:1rem;margin-bottom:1.25rem">
+
+      <!-- ENABLE_DEBUG -->
+      <div style="background:#0f172a;border:1px solid #d9770644;border-radius:10px;padding:1.1rem">
+        <div style="display:flex;align-items:center;gap:.5rem;margin-bottom:.6rem">
+          <span class="guard-badge guard-debug" style="font-size:.65rem">&#128274; ENABLE_DEBUG</span>
+          <span style="font-size:.7rem;color:#fef08a;font-weight:700">Debug Endpoints</span>
+        </div>
+        <div style="font-size:.72rem;color:#cbd5e1;line-height:1.7;margin-bottom:.75rem">
+          Guards all <code style="background:#1e293b;color:#bfdbfe;padding:.02rem .3rem;border-radius:3px">/debug/*</code> routes that expose credentials, connection details, and the /tmp filesystem.<br/>
+          Default: <strong style="color:#fca5a5">false</strong> (blocked on every cf push)
+        </div>
+        <div style="font-size:.68rem;color:#94a3b8;margin-bottom:.3rem;font-weight:600;text-transform:uppercase;letter-spacing:.05em">Protected Routes (5)</div>
+        <div style="font-size:.68rem;color:#cbd5e1;font-family:monospace;line-height:1.8">
+          GET /debug/destination<br/>
+          GET /debug/db<br/>
+          GET /debug/s3<br/>
+          GET /debug/tmp<br/>
+          GET /debug/tmp/preview
+        </div>
+        <div style="margin-top:.85rem;background:#1e293b;border-radius:6px;padding:.6rem .8rem">
+          <div style="font-size:.65rem;color:#94a3b8;margin-bottom:.25rem;font-weight:600">ENABLE</div>
+          <code style="font-size:.68rem;color:#bfdbfe">cf set-env sharepoint-rag-api ENABLE_DEBUG true</code><br/>
+          <code style="font-size:.68rem;color:#bfdbfe">cf restart sharepoint-rag-api</code>
+          <div style="font-size:.65rem;color:#94a3b8;margin-top:.4rem;margin-bottom:.25rem;font-weight:600">DISABLE</div>
+          <code style="font-size:.68rem;color:#bfdbfe">cf set-env sharepoint-rag-api ENABLE_DEBUG false</code><br/>
+          <code style="font-size:.68rem;color:#bfdbfe">cf restart sharepoint-rag-api</code>
+        </div>
+      </div>
+
+      <!-- ENABLE_DESTRUCTIVE -->
+      <div style="background:#0f172a;border:1px solid #dc262644;border-radius:10px;padding:1.1rem">
+        <div style="display:flex;align-items:center;gap:.5rem;margin-bottom:.6rem">
+          <span class="guard-badge guard-destr" style="font-size:.65rem">&#128274; ENABLE_DESTRUCTIVE</span>
+          <span style="font-size:.7rem;color:#fca5a5;font-weight:700">Destructive Actions</span>
+        </div>
+        <div style="font-size:.72rem;color:#cbd5e1;line-height:1.7;margin-bottom:.75rem">
+          Guards all DELETE routes and database wipe operations. Prevents accidental data loss in production.<br/>
+          Default: <strong style="color:#fca5a5">false</strong> (blocked on every cf push)
+        </div>
+        <div style="font-size:.68rem;color:#94a3b8;margin-bottom:.3rem;font-weight:600;text-transform:uppercase;letter-spacing:.05em">Protected Routes (7)</div>
+        <div style="font-size:.68rem;color:#cbd5e1;font-family:monospace;line-height:1.8">
+          DELETE /storage/{day}/{filename}<br/>
+          DELETE /storage/{day}<br/>
+          DELETE /s3/object/{key}<br/>
+          DELETE /s3/objects<br/>
+          DELETE /db/item/{item_id}<br/>
+          POST &nbsp;&nbsp;/db/truncate?confirm=true<br/>
+          POST &nbsp;&nbsp;/db/drop?confirm=true
+        </div>
+        <div style="margin-top:.85rem;background:#1e293b;border-radius:6px;padding:.6rem .8rem">
+          <div style="font-size:.65rem;color:#94a3b8;margin-bottom:.25rem;font-weight:600">ENABLE</div>
+          <code style="font-size:.68rem;color:#bfdbfe">cf set-env sharepoint-rag-api ENABLE_DESTRUCTIVE true</code><br/>
+          <code style="font-size:.68rem;color:#bfdbfe">cf restart sharepoint-rag-api</code>
+          <div style="font-size:.65rem;color:#94a3b8;margin-top:.4rem;margin-bottom:.25rem;font-weight:600">DISABLE</div>
+          <code style="font-size:.68rem;color:#bfdbfe">cf set-env sharepoint-rag-api ENABLE_DESTRUCTIVE false</code><br/>
+          <code style="font-size:.68rem;color:#bfdbfe">cf restart sharepoint-rag-api</code>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- How it works -->
+    <div style="background:#0f172a;border:1px solid #1e293b;border-radius:8px;padding:.9rem 1.1rem">
+      <div style="font-size:.7rem;font-weight:700;color:#93c5fd;margin-bottom:.5rem;text-transform:uppercase;letter-spacing:.05em">How It Works</div>
+      <div style="font-size:.72rem;color:#cbd5e1;line-height:1.7">
+        Both flags are read from <code style="background:#1e293b;color:#bfdbfe;padding:.02rem .3rem;border-radius:3px">os.getenv()</code> at <strong style="color:#ffffff">request time</strong> (not startup), so <code style="background:#1e293b;color:#bfdbfe;padding:.02rem .3rem;border-radius:3px">cf restart</code> (~30s) is all that's needed — no rebuild or restage required.
+        Both default to <code style="background:#1e293b;color:#fca5a5;padding:.02rem .3rem;border-radius:3px">false</code> in <code style="background:#1e293b;color:#bfdbfe;padding:.02rem .3rem;border-radius:3px">manifest.yml</code>, so every <code style="background:#1e293b;color:#bfdbfe;padding:.02rem .3rem;border-radius:3px">cf push</code> resets them to off automatically.
+        When blocked, routes return <code style="background:#1e293b;color:#fca5a5;padding:.02rem .3rem;border-radius:3px">HTTP 403</code> with a descriptive message — the endpoints remain visible in <code style="background:#1e293b;color:#bfdbfe;padding:.02rem .3rem;border-radius:3px">/docs</code> for documentation purposes.
+      </div>
+    </div>
+  </div>
+</div>
+
+
+<!-- ═══════════════════════════════════════════════════════ SECTION 9: S3 MODULE -->
+<div>
+  <div class="section-label">9 — s3.py — Object Store Module</div>
+  <p class="section-desc"><strong>What this slide shows:</strong> The design and capabilities of <code>s3.py</code>, the Object Store integration module used by both the vectorization pipeline and the <code>/s3/*</code> API routes. <strong>Credential resolution</strong> follows a priority chain evaluated at the first call: (1) <code>VCAP_SERVICES</code> — the CF Object Store service binding, which supplies <code>access_key_id</code>, <code>secret_access_key</code>, <code>bucket</code>, and a SAP BTP-specific <code>host</code> field; the host is normalized to an <code>https://</code> endpoint URL before being passed to boto3 as <code>endpoint_url</code>, since SAP BTP uses its own S3-compatible endpoint rather than AWS's default. (2) <code>s3_creds.json</code> — a local development JSON sidecar at the project root, allowing the same codebase to run against a real S3 bucket without any VCAP_SERVICES present. (3) Standard AWS environment variables (<code>AWS_ACCESS_KEY_ID</code>, <code>AWS_SECRET_ACCESS_KEY</code>, <code>S3_BUCKET</code>) — the fallback of last resort for CI or containerized environments. <strong>Singleton client:</strong> the boto3 client is constructed once on the first request and stored in a module-level variable protected by a <code>threading.Lock</code>; subsequent requests reuse the same client without any initialization overhead. <code>reset_client()</code> can be called to force re-initialization after credential rotation without restarting the CF dyno. <strong>Auto-upload on run:</strong> <code>_upload_run_artifacts()</code> is called at the end of every vectorize cycle and uploads the HTML analysis report and the structured call log to S3 under <code>runs/YYYYMMDD/</code>; any upload failure is caught, logged as a warning, and does not affect the pipeline result — the run completes successfully regardless of S3 availability. <strong>Operations available:</strong> <code>upload_file</code> (path-based), <code>upload_bytes</code> (in-memory), <code>upload_fileobj</code> (streaming); <code>download_file</code> (to path), <code>download_bytes</code> (returns bytes), <code>download_text</code> (returns decoded string), <code>stream_object</code> (returns raw streaming body for large files); <code>list_objects</code> (with prefix and max-keys), <code>object_exists</code>, <code>get_metadata</code> (head-object); <code>delete_object</code>, <code>delete_objects</code> (bulk, up to 1 000), <code>delete_prefix</code>; <code>copy_object</code>; <code>get_presigned_url</code> (GET, configurable expiry), <code>get_presigned_upload_url</code> (POST policy for direct browser-to-S3 upload); and <code>ping</code> (head-bucket connectivity check used at startup and by <code>GET /debug/s3</code>).</p>
+  <div class="card">
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:.85rem">
+      <div style="background:#0f172a;border:1px solid #1e293b;border-radius:8px;padding:1rem">
+        <div style="font-size:.72rem;font-weight:700;color:#fef08a;margin-bottom:.5rem">Credential Resolution</div>
+        <div style="font-size:.73rem;color:#cbd5e1;line-height:1.6">
+          1. <strong style="color:#ffffff">VCAP_SERVICES</strong> — objectstore / aws-s3 service binding<br/>
+          2. <strong style="color:#ffffff">s3_creds.json</strong> — local dev file<br/>
+          3. <strong style="color:#ffffff">env vars</strong> — AWS_ACCESS_KEY_ID / SECRET / S3_BUCKET<br/>
+          SAP BTP 'host' field normalized to <code style="background:#1e293b;color:#bfdbfe;padding:.05rem .25rem;border-radius:3px;font-size:.68rem">https://</code> endpoint_url
+        </div>
+      </div>
+      <div style="background:#0f172a;border:1px solid #1e293b;border-radius:8px;padding:1rem">
+        <div style="font-size:.72rem;font-weight:700;color:#fef08a;margin-bottom:.5rem">Singleton Client</div>
+        <div style="font-size:.73rem;color:#cbd5e1;line-height:1.6">
+          boto3 client created once, shared across calls.<br/>
+          Thread-safe via <code style="background:#1e293b;color:#bfdbfe;padding:.05rem .25rem;border-radius:3px;font-size:.68rem">_client_lock</code>.<br/>
+          <code style="background:#1e293b;color:#bfdbfe;padding:.05rem .25rem;border-radius:3px;font-size:.68rem">reset_client()</code> forces re-init after credential rotation.
+        </div>
+      </div>
+      <div style="background:#0f172a;border:1px solid #1e293b;border-radius:8px;padding:1rem">
+        <div style="font-size:.72rem;font-weight:700;color:#fef08a;margin-bottom:.5rem">Auto-Upload on Run</div>
+        <div style="font-size:.73rem;color:#cbd5e1;line-height:1.6">
+          After every vectorize run, <code style="background:#1e293b;color:#bfdbfe;padding:.05rem .25rem;border-radius:3px;font-size:.68rem">_upload_run_artifacts()</code> uploads the HTML report and call log to S3 under <code style="background:#1e293b;color:#bfdbfe;padding:.05rem .25rem;border-radius:3px;font-size:.68rem">runs/YYYYMMDD/</code>.<br/>
+          Non-fatal — failures are logged as warnings, run continues.
+        </div>
+      </div>
+      <div style="background:#0f172a;border:1px solid #1e293b;border-radius:8px;padding:1rem">
+        <div style="font-size:.72rem;font-weight:700;color:#fef08a;margin-bottom:.5rem">Operations Available</div>
+        <div style="font-size:.73rem;color:#cbd5e1;line-height:1.6">
+          upload_file · upload_bytes · upload_fileobj<br/>
+          download_file · download_bytes · download_text · stream_object<br/>
+          list_objects · object_exists · get_metadata<br/>
+          delete_object · delete_objects · delete_prefix<br/>
+          copy_object · get_presigned_url · get_presigned_upload_url · ping
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+
+<!-- ═══════════════════════════════════════════════════════ SECTION 9: STARTUP -->
+<div>
+  <div class="section-label">10 — App Startup Sequence (lifespan)</div>
+  <p class="section-desc"><strong>What this slide shows:</strong> The four-step startup sequence executed once per CF dyno start via FastAPI's <code>lifespan</code> context manager — the code block that runs before the first request is accepted and after the last one completes. <strong>Step 1 — Validate credentials:</strong> on CF, confirms the BTP Destination Service binding is present in <code>VCAP_SERVICES</code> and that <code>clientid</code>, <code>clientsecret</code>, <code>url</code>, and <code>uri</code> are all set; locally, confirms <code>TENANT_ID</code>, <code>CLIENT_ID</code>, and <code>CLIENT_SECRET</code> are available via <code>.env</code> or environment variables. A missing credential raises a <code>RuntimeError</code> immediately, causing the CF health check to fail and CF to not route traffic to this instance — preventing the app from serving requests that would fail anyway. <strong>Step 2 — Connect to SharePoint:</strong> issues a live MS Graph API call to resolve the SharePoint <code>site_id</code> (from <code>GET /sites/{hostname}:{path}</code>) and then the document library's <code>drive_id</code> (from <code>GET /sites/{site_id}/drives</code>, selecting the first <code>documentLibrary</code>). This step confirms that the full auth chain (VCAP_SERVICES → XSUAA → Destination Service → MS Graph) is working end-to-end. This step is <strong>non-fatal</strong>: if Graph is temporarily unreachable (e.g. during a token service outage), the app starts, but routes that require SharePoint return HTTP 503 until the connection is available — allowing non-SharePoint endpoints like <code>/db/query</code>, <code>/s3/*</code>, and <code>/health</code> to continue serving normally. <strong>Step 3 — Ping S3:</strong> calls <code>s3.ping()</code> which performs a head-bucket request against the configured bucket. Also non-fatal — logs a warning if S3 is not configured or unreachable; <code>/s3/*</code> and artifact upload calls will return 503 until resolved. <strong>Step 4 — App ready:</strong> HANA table creation and schema migration are managed entirely by the HDI container at CF deploy time — the app does not run any <code>CREATE TABLE</code> statements at startup and does not hold the schema in memory. The <strong>embedding model is loaded lazily</strong> on the first call to any vectorize endpoint: <code>SentenceTransformer("BAAI/bge-small-en-v1.5")</code> is executed at that point and the model object is cached in a module-level variable for the lifetime of the dyno, keeping startup time fast and ensuring the 1 536 MB RAM budget is not consumed until the model is actually needed. The CF manifest configures: Python 3.11 buildpack, 1 536 MB memory, 4 096 MB disk, <code>/health</code> as the health-check endpoint with a 120 s invocation timeout, 180 s startup timeout, and three bound services: <code>btp-catalyst-platform-destination</code>, <code>btp-catalyst-platform-db</code>, and <code>btp-catalyst-platform-objectstore</code>.</p>
+  <div class="card">
+    <div style="display:flex;flex-direction:column;gap:.6rem;max-width:680px;margin:0 auto">
+
+      <div style="display:flex;gap:1rem;align-items:flex-start">
+        <div style="background:#1e3a5f;color:#bfdbfe;border-radius:6px;padding:.25rem .6rem;font-size:.68rem;font-weight:800;flex-shrink:0;margin-top:.1rem">1</div>
+        <div style="font-size:.78rem;color:#f8fafc;line-height:1.5"><strong style="color:#ffffff">Validate credentials</strong> — on CF: read Destination Service binding. Locally: check TENANT_ID / CLIENT_ID / CLIENT_SECRET. Raise immediately if missing.</div>
+      </div>
+      <div style="display:flex;gap:1rem;align-items:flex-start">
+        <div style="background:#1e3a5f;color:#bfdbfe;border-radius:6px;padding:.25rem .6rem;font-size:.68rem;font-weight:800;flex-shrink:0;margin-top:.1rem">2</div>
+        <div style="font-size:.78rem;color:#f8fafc;line-height:1.5"><strong style="color:#ffffff">Connect to SharePoint</strong> — resolve <code style="background:#1e293b;color:#bfdbfe;padding:.05rem .25rem;border-radius:3px;font-size:.68rem">site_id</code> and <code style="background:#1e293b;color:#bfdbfe;padding:.05rem .25rem;border-radius:3px;font-size:.68rem">drive_id</code> via MS Graph. Non-fatal on failure — app starts but returns 503 until connection is available.</div>
+      </div>
+      <div style="display:flex;gap:1rem;align-items:flex-start">
+        <div style="background:#134e4a55;color:#99f6e4;border-radius:6px;padding:.25rem .6rem;font-size:.68rem;font-weight:800;flex-shrink:0;margin-top:.1rem">3</div>
+        <div style="font-size:.78rem;color:#f8fafc;line-height:1.5"><strong style="color:#ffffff">Ping S3</strong> — verify Object Store connectivity. Non-fatal — logs warning if not configured; <code style="background:#1e293b;color:#bfdbfe;padding:.05rem .25rem;border-radius:3px;font-size:.68rem">/s3/*</code> endpoints will return 503 until resolved.</div>
+      </div>
+      <div style="display:flex;gap:1rem;align-items:flex-start">
+        <div style="background:#3b0764aa;color:#ddd6fe;border-radius:6px;padding:.25rem .6rem;font-size:.68rem;font-weight:800;flex-shrink:0;margin-top:.1rem">4</div>
+        <div style="font-size:.78rem;color:#f8fafc;line-height:1.5"><strong style="color:#ffffff">App ready</strong> — HANA tables managed by HDI container (not created at startup). Embedding model loaded lazily on first vectorize call.</div>
+      </div>
+
+    </div>
+    <div class="callout" style="margin-top:1.25rem;max-width:680px;margin-left:auto;margin-right:auto">
+      <strong>CF config (manifest.yml):</strong> Python 3.11 · 1 536 MB RAM · 4 096 MB disk · health-check <code>/health</code> with 120 s invocation timeout · startup timeout 180 s. Services: <code>btp-catalyst-platform-destination</code> · <code>btp-catalyst-platform-db</code> · <code>btp-catalyst-platform-objectstore</code>
+    </div>
+  </div>
+</div>
+
+
+<!-- ═══════════════════════════════════════════════════════ SECTION 11: BACKLOG -->
+<div>
+  <div class="section-label">11 — Known Gaps &amp; Backlog</div>
+  <p class="section-desc"><strong>What this slide shows:</strong> Known quality and engineering gaps in the current implementation, each rated by severity and with a concrete fix described. <strong>Gap 1 — RESOLVED — Chunk size vs. model window mismatch:</strong> the original embedding model <code>all-MiniLM-L6-v2</code> has a hard <code>max_seq_length = 256</code> word-pieces, but <code>_semantic_chunks()</code> was configured with <code>max_tokens = 512</code> — meaning any chunk exceeding 256 tokens would be silently truncated by the tokenizer at inference time, with the second half of the chunk contributing zero signal to the embedding. This was fixed by switching to <code>BAAI/bge-small-en-v1.5</code>, which has <code>max_seq_length = 512</code>, exactly matching the chunker window. <code>normalize_embeddings=True</code> is set so that all output vectors are unit-norm, making cosine similarity numerically equivalent to dot product and ensuring consistent behaviour. Vector integrity was validated end-to-end by adding a <code>GET /db/vectors/{item_id}</code> API endpoint that reads the raw <code>REAL_VECTOR(384)</code> binary from HANA, decoding the hdbcli binary format (<code>[uint16 dims LE][uint16 padding][float32×384 LE]</code> = 1 540 bytes) into a Python float list, then comparing element-by-element against freshly re-computed embeddings from the same chunk text — cosine similarity = 1.0 on all chunks, confirming byte-for-byte correctness between the stored vectors and a live model call. <strong>Gap 2 — MED — Character-based token approximation:</strong> <code>_semantic_chunks()</code> estimates chunk size as <code>max_tokens × 4</code> characters, using the heuristic that one token ≈ four characters. This breaks down for content that tokenizes densely (source code, CJK characters, heavy punctuation) or sparsely (very long words). The correct fix is to count tokens using the model's own tokenizer — <code>model.tokenizer.encode(text)</code> — before splitting, guaranteeing chunks never exceed the sequence length limit regardless of character distribution. <strong>Gap 3 — MED — No chunk overlap:</strong> the current chunker hard-cuts at paragraph boundaries with no carry-over. When a sentence or concept straddles a chunk boundary, the first half is indexed in chunk N and the second half in chunk N+1 — but a query matching only the second half will not retrieve chunk N. Adding 10–15% overlap (approximately 26–38 tokens on a 512-token window) by carrying the last N tokens of each chunk into the start of the next would substantially improve recall for boundary-crossing concepts at modest storage cost. <strong>Gap 4 — MED — No chunk metadata:</strong> <code>BRAIN_TEXT_CHUNKS</code> currently stores only raw text, filename, and source. Missing columns include section heading, page number, table name (for xlsx), deliverable type, SP folder path, and version timestamp — all of which would enable filtered retrieval (e.g. "search only within Layer 3 deliverables" or "search only the latest version of each file") and provide richer citation context in LLM responses. This would require schema additions (ALTER TABLE) and changes to the extraction functions to capture structural metadata during text extraction. <strong>Gap 5 — LOW — No batched embedding:</strong> each chunk is currently embedded with a separate <code>model.encode([chunk_text])</code> call inside a loop, incurring Python call overhead and preventing the model from parallelizing across chunks on the CPU's BLAS layer. Collecting all chunks for a file into a list and calling <code>model.encode(chunks_list, batch_size=64)</code> once would be 5–10× faster on CPU with no change to output values. <strong>Gap 6 — LOW — No vector provenance stamping:</strong> <code>BRAIN_VECTORS</code> stores no information about which model produced the stored embeddings. If the embedding model is ever changed (e.g. upgrading to a 768-dim model), newly written vectors would be dimensionally incompatible with existing ones, and <code>COSINE_SIMILARITY()</code> queries would silently return meaningless scores without any error. Adding <code>embed_model</code> (string) and <code>embed_dim</code> (integer) columns to BRAIN_VECTORS, and enforcing a model-tag match before any query, would detect this class of corruption before it reaches users.</p>
+  <div class="card">
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:.85rem">
+
+      <div style="background:#14532d33;border:1px solid #16a34a55;border-radius:8px;padding:1rem">
+        <div style="display:flex;align-items:center;gap:.6rem;margin-bottom:.5rem">
+          <span style="background:#16a34a;color:#fff;font-size:.58rem;font-weight:800;padding:.1rem .45rem;border-radius:4px;letter-spacing:.04em">RESOLVED</span>
+          <span style="font-size:.73rem;font-weight:700;color:#bbf7d0">Chunk size vs. model window mismatch</span>
+        </div>
+        <div style="font-size:.71rem;color:#cbd5e1;line-height:1.6">
+          Previously: <code style="background:#1e293b;color:#fca5a5;padding:.02rem .3rem;border-radius:3px">all-MiniLM-L6-v2</code> had max_seq_length=<strong>256</strong> but chunker used max_tokens=512 — truncating the second half of every large chunk silently.<br/>
+          <strong style="color:#bbf7d0">Fixed:</strong> switched embedding model to <code style="background:#1e293b;color:#bbf7d0;padding:.02rem .3rem;border-radius:3px">BAAI/bge-small-en-v1.5</code> which has max_seq_length=<strong>512</strong>, matching the chunker window exactly. normalize_embeddings=True enforces unit-norm vectors for correct cosine similarity. Vector integrity confirmed via HANA binary decode + local re-embedding comparison (cosine_sim = 1.0 on all chunks).
+        </div>
+      </div>
+
+      <div style="background:#422006aa;border:1px solid #ea580c44;border-radius:8px;padding:1rem">
+        <div style="display:flex;align-items:center;gap:.6rem;margin-bottom:.5rem">
+          <span style="background:#ea580c;color:#fff;font-size:.58rem;font-weight:800;padding:.1rem .45rem;border-radius:4px;letter-spacing:.04em">MED</span>
+          <span style="font-size:.73rem;font-weight:700;color:#fed7aa">Character-based token approximation</span>
+        </div>
+        <div style="font-size:.71rem;color:#cbd5e1;line-height:1.6">
+          <code style="background:#1e293b;color:#fed7aa;padding:.02rem .3rem;border-radius:3px">max_chars = max_tokens × 4</code> — 1 char ≈ 1 token heuristic is inaccurate for code, CJK, or heavily punctuated text.<br/>
+          <strong style="color:#fed7aa">Fix:</strong> count tokens via the model's actual tokenizer before splitting (<code style="background:#1e293b;color:#fed7aa;padding:.02rem .3rem;border-radius:3px">model.tokenizer.encode(text)</code>).
+        </div>
+      </div>
+
+      <div style="background:#422006aa;border:1px solid #ea580c44;border-radius:8px;padding:1rem">
+        <div style="display:flex;align-items:center;gap:.6rem;margin-bottom:.5rem">
+          <span style="background:#ea580c;color:#fff;font-size:.58rem;font-weight:800;padding:.1rem .45rem;border-radius:4px;letter-spacing:.04em">MED</span>
+          <span style="font-size:.73rem;font-weight:700;color:#fed7aa">No chunk overlap</span>
+        </div>
+        <div style="font-size:.71rem;color:#cbd5e1;line-height:1.6">
+          Paragraphs are hard-cut at the chunk boundary — meaning crossing a split point is lost. Sentences that straddle a boundary are half-indexed.<br/>
+          <strong style="color:#fed7aa">Fix:</strong> add ~10–15% overlap (~26–38 tokens on a 256-token window) by carrying the last N tokens of each chunk into the start of the next.
+        </div>
+      </div>
+
+      <div style="background:#422006aa;border:1px solid #ea580c44;border-radius:8px;padding:1rem">
+        <div style="display:flex;align-items:center;gap:.6rem;margin-bottom:.5rem">
+          <span style="background:#ea580c;color:#fff;font-size:.58rem;font-weight:800;padding:.1rem .45rem;border-radius:4px;letter-spacing:.04em">MED</span>
+          <span style="font-size:.73rem;font-weight:700;color:#fed7aa">No chunk metadata</span>
+        </div>
+        <div style="font-size:.71rem;color:#cbd5e1;line-height:1.6">
+          <code style="background:#1e293b;color:#fed7aa;padding:.02rem .3rem;border-radius:3px">BRAIN_TEXT_CHUNKS</code> stores only <code style="background:#1e293b;color:#fed7aa;padding:.02rem .3rem;border-radius:3px">item_id, chunk_id, chunk_data, filename, source</code>.<br/>
+          <strong style="color:#fed7aa">Missing:</strong> section/heading, page number, deliverable_type, source_path, version — needed for filtered retrieval and citation.<br/>
+          <strong style="color:#fed7aa">Fix:</strong> add columns + pass metadata through extraction.
+        </div>
+      </div>
+
+      <div style="background:#1e293b;border:1px solid #334155;border-radius:8px;padding:1rem">
+        <div style="display:flex;align-items:center;gap:.6rem;margin-bottom:.5rem">
+          <span style="background:#475569;color:#fff;font-size:.58rem;font-weight:800;padding:.1rem .45rem;border-radius:4px;letter-spacing:.04em">LOW</span>
+          <span style="font-size:.73rem;font-weight:700;color:#f8fafc">No batched embedding</span>
+        </div>
+        <div style="font-size:.71rem;color:#cbd5e1;line-height:1.6">
+          Chunks are embedded one at a time in a loop: <code style="background:#1e293b;color:#bfdbfe;padding:.02rem .3rem;border-radius:3px">model.encode(chunk_text)</code> × N calls.<br/>
+          <strong style="color:#f8fafc">Fix:</strong> collect all chunks for a file, call <code style="background:#1e293b;color:#bfdbfe;padding:.02rem .3rem;border-radius:3px">model.encode(chunks_list, batch_size=64)</code> once — 5–10× faster on CPU.
+        </div>
+      </div>
+
+      <div style="background:#1e293b;border:1px solid #334155;border-radius:8px;padding:1rem">
+        <div style="display:flex;align-items:center;gap:.6rem;margin-bottom:.5rem">
+          <span style="background:#475569;color:#fff;font-size:.58rem;font-weight:800;padding:.1rem .45rem;border-radius:4px;letter-spacing:.04em">LOW</span>
+          <span style="font-size:.73rem;font-weight:700;color:#f8fafc">No vector stamping</span>
+        </div>
+        <div style="font-size:.71rem;color:#cbd5e1;line-height:1.6">
+          <code style="background:#1e293b;color:#bfdbfe;padding:.02rem .3rem;border-radius:3px">BRAIN_VECTORS</code> stores no model provenance.<br/>
+          <strong style="color:#f8fafc">Missing:</strong> <code style="background:#1e293b;color:#bfdbfe;padding:.02rem .3rem;border-radius:3px">embed_model</code>, <code style="background:#1e293b;color:#bfdbfe;padding:.02rem .3rem;border-radius:3px">embed_dim</code>, <code style="background:#1e293b;color:#bfdbfe;padding:.02rem .3rem;border-radius:3px">corpus_version</code> — mixing vectors from two models corrupts cosine similarity silently.<br/>
+          <strong style="color:#f8fafc">Fix:</strong> add columns; enforce same model tag before any query.
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+
+</div><!-- /page -->
+
+<div style="margin-top:3rem;text-align:center;font-size:.68rem;color:#64748b;padding-bottom:1rem">
+  Generated from cf8/push — api.py · db.py · s3.py · manifest.yml &nbsp;·&nbsp; Last updated: 2026-09-20
+</div>
+
+</body>
+</html>

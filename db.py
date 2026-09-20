@@ -1132,16 +1132,36 @@ def db_migrate():
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/drop")
-def db_drop():
-    """[DISABLED] This endpoint has been permanently disabled."""
-    raise HTTPException(status_code=410, detail="This endpoint is disabled.")
+@router.post("/drop", dependencies=[Depends(_require_destructive)])
+def db_drop(confirm: bool = False):
+    """Drop all BRAIN tables entirely. Requires ENABLE_DESTRUCTIVE=true and ?confirm=true."""
+    if not confirm:
+        raise HTTPException(
+            status_code=400,
+            detail="Pass ?confirm=true to confirm this destructive action.",
+        )
+    try:
+        result = drop_tables()
+        return {"status": "ok", "dropped": result}
+    except Exception as e:
+        log.error(f"DB drop failed: {type(e).__name__}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/truncate")
-def db_truncate():
-    """[DISABLED] This endpoint has been permanently disabled."""
-    raise HTTPException(status_code=410, detail="This endpoint is disabled.")
+@router.post("/truncate", dependencies=[Depends(_require_destructive)])
+def db_truncate(confirm: bool = False):
+    """Delete all rows from all BRAIN tables. Requires ENABLE_DESTRUCTIVE=true and ?confirm=true."""
+    if not confirm:
+        raise HTTPException(
+            status_code=400,
+            detail="Pass ?confirm=true to confirm this destructive action.",
+        )
+    try:
+        result = truncate_tables()
+        return {"status": "ok", "deleted": result}
+    except Exception as e:
+        log.error(f"DB truncate failed: {type(e).__name__}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/file-registry")

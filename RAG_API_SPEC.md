@@ -159,6 +159,34 @@ Semantic text chunks.
 | `source` | `NVARCHAR(20)` | |
 | `insert_dt` | `TIMESTAMP` | |
 
+### CATALYSTPLATFORM_BRAIN_FILES_VERSIONS
+
+Version history for SharePoint files, populated by `/files/versions` and `/pipeline`.
+
+| Column | Type | Notes |
+|---|---|---|
+| `item_id` | `NVARCHAR(500)` | PK (part 1) |
+| `version_id` | `NVARCHAR(50)` | PK (part 2) |
+| `file_size_text` | `NVARCHAR(50)` | Human-readable size |
+| `size_bytes` | `BIGINT` | |
+| `last_modified_dt` | `NVARCHAR(50)` | ISO 8601 string |
+| `lastmodified_by` | `NVARCHAR(500)` | |
+| `download_url` | `NCLOB` | Pre-authenticated version download URL |
+| `version_count` | `INT` | Total versions for this file |
+| `filename` | `NVARCHAR(500)` | |
+
+### CATALYSTPLATFORM_BRAIN_FILES_CHUNK
+
+Per-file chunk count summary, populated after every successful ingest by `db.ingest_chunk_summary()`.
+
+| Column | Type | Notes |
+|---|---|---|
+| `item_id` | `NVARCHAR(500)` | PK |
+| `filename` | `NVARCHAR(500)` | |
+| `chunk_count` | `INT` | Total chunks produced for this file |
+| `source` | `NVARCHAR(20)` | `'sharepoint'`, `'s3'`, or `'tmp'` |
+| `insert_dt` | `TIMESTAMP` | |
+
 ### CATALYSTPLATFORM_BRAIN_FILE_REGISTRY
 
 Change-detection registry — one row per file, updated after every successful ingest.
@@ -171,7 +199,7 @@ Change-detection registry — one row per file, updated after every successful i
 | `filename` | `NVARCHAR(500)` | |
 | `insert_datetime` | `TIMESTAMP` | DEFAULT `CURRENT_TIMESTAMP` |
 
-> **Note:** `BRAIN_SP_FILES.last_modified` is used as the actual change-detection key in `_filter_stale_items()`. `BRAIN_FILE_REGISTRY` is updated after every successful ingest but the filter reads `BRAIN_SP_FILES`.
+> **Note:** `BRAIN_SP_FILES.last_modified` is used as the actual change-detection key in `_filter_stale_items()` — `db.get_modified_map()` reads from `BRAIN_SP_FILES`. `BRAIN_FILE_REGISTRY` is written after every successful ingest (best-effort, non-fatal) but is **not** the source the filter reads. `/tmp` files also write to `BRAIN_SP_FILES` (source=`'tmp'`), not to a separate table.
 
 ---
 
@@ -276,7 +304,7 @@ All `/files` endpoints require SharePoint connection (`require_connection`).
 |---|---|---|
 | `GET` | `/analysis` | List all run reports and logs (by date folder). |
 | `GET` | `/analysis/latest` | View the most recent run report as HTML. |
-| `GET` | `/analysis/db` | Live DB metrics dashboard (all HANA BRAIN tables) as HTML. |
+| `GET` | `/analysis/db` | Live DB metrics dashboard — row counts and stats for all HANA BRAIN tables, rendered as HTML. |
 | `GET` | `/analysis/{day}/{filename}` | View a specific report or log. |
 
 ### Tag: database (router prefix `/db`)
@@ -288,11 +316,15 @@ All `/files` endpoints require SharePoint connection (`require_connection`).
 | `POST` | `/db/sql` | Run a validated **SELECT-only** SQL query against HANA. Body: `SqlRequest`. Guards: first keyword must be `SELECT`; blocks DML/DDL, `--`/`/* */` comments, semicolons, and dangerous keywords (`DROP`, `DELETE`, `INSERT`, `UPDATE`, `EXEC`, etc.). |
 | `GET` | `/db/files` | List all rows in `BRAIN_SP_FILES`. |
 | `GET` | `/db/chunks/{item_id}` | Get all chunks for a file. |
+| `GET` | `/db/versions` | List all rows in `BRAIN_FILES_VERSIONS`. |
+| `GET` | `/db/versions/{item_id}` | Get version history for a specific file. |
+| `GET` | `/db/chunk-summary` | List all rows in `BRAIN_FILES_CHUNK` (one row per file with chunk count). |
+| `GET` | `/db/chunk-summary/{item_id}` | Get chunk count summary for a specific file. |
 | `DELETE` | `/db/item/{item_id}` | Delete a file + its chunks + vectors. Requires `ENABLE_DESTRUCTIVE=true`. |
 | `POST` | `/db/init` | Create all BRAIN tables (idempotent). |
 | `POST` | `/db/migrate` | Apply schema migrations (add `source` column). |
-| `POST` | `/db/drop` | Drop all BRAIN tables. Requires `ENABLE_DESTRUCTIVE=true` + `?confirm=true`. |
-| `POST` | `/db/truncate` | Delete all rows. Requires `ENABLE_DESTRUCTIVE=true` + `?confirm=true`. |
+| `POST` | `/db/drop` | Drop all BRAIN tables entirely. Requires `ENABLE_DESTRUCTIVE=true` + `?confirm=true`. |
+| `POST` | `/db/truncate` | Delete all rows from all BRAIN tables. Requires `ENABLE_DESTRUCTIVE=true` + `?confirm=true`. |
 | `GET` | `/db/file-registry` | List `BRAIN_FILE_REGISTRY` rows. Query: `source`, `limit`, `offset`. |
 | `POST` | `/db/backup` | Dump all BRAIN tables to JSONL and upload to S3. Body: `{"s3_dir": "...", "include_vectors": true}`. |
 
@@ -540,7 +572,7 @@ After every batch:
 | `HF_HUB_DISABLE_SYMLINKS_WARNING` | `1` | Suppress HuggingFace symlink warning on CF |
 | `HF_HUB_DISABLE_IMPLICIT_TOKEN` | `1` | Suppress HuggingFace token warning |
 | `TOKENIZERS_PARALLELISM` | `false` | Prevent tokenizer fork warnings |
-| `ENABLE_DESTRUCTIVE` | `false` | Must be `true` to enable DELETE endpoints and `/db/drop`, `/db/truncate` |
+| `ENABLE_DESTRUCTIVE` | `false` | Must be `true` to enable DELETE endpoints (`/storage`, `/s3`, `/db/item`) and destructive DB operations (`/db/drop`, `/db/truncate`). Default `false` on every `cf push`. |
 | `ENABLE_DEBUG` | `false` | Must be `true` to enable `/debug/*` endpoints |
 | `PORT` | `8000` | Port uvicorn binds to (set by CF automatically) |
 | `VCAP_SERVICES` | — | Injected by CF — contains all bound service credentials |
