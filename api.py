@@ -32,12 +32,19 @@ import s4
 load_dotenv()
 
 # ── Deliverable lookup ────────────────────────────────────────────────────────
+# Maps a BTP-Brain folder segment to a deliverable rowId. Keyed on the short
+# label, the rowId and the full name — all lowercased — because the BTP-Brain
+# folders are named by hand and use whichever form the author preferred.
+# Mirrors the DELIVERABLES fixture in the platform UI; keep the two in step.
 _DELIVERABLES_PATH = os.path.join(os.path.dirname(__file__), "deliverables.json")
 with open(_DELIVERABLES_PATH, encoding="utf-8") as _f:
-    _DELIVERABLE_LOOKUP: dict[str, str] = {
-        d["short"].strip().lower(): d["rowId"]
-        for d in json.load(_f)
-    }
+    _DELIVERABLES: list[dict] = json.load(_f)
+
+_DELIVERABLE_LOOKUP: dict[str, str] = {}
+for _d in _DELIVERABLES:
+    for _alias in (_d.get("short"), _d.get("rowId"), _d.get("name")):
+        if _alias:
+            _DELIVERABLE_LOOKUP.setdefault(_alias.strip().lower(), _d["rowId"])
 
 
 if sys.platform == "win32":
@@ -294,11 +301,21 @@ def _flatten_item(item: dict) -> dict:
     dPath       = "/".join(quote(seg, safe="") for seg in f"{folder_path}/{item_name}".split("/"))
     basePath    = f"{GRAPH_BASE}{path[0]}:{dPath}:/content"
 
+    # BTP-Brain layout: /BTP-Brain/<layer>/<Guidelines|Templates>/<deliverable>[/<client>]/file
+    # The deliverable sits right after the type folder for every layer; Layer3 adds a
+    # client folder after the deliverable, which carries no tag and is ignored here.
     fp_parts         = folder_path.split("/")
     layer            = fp_parts[2] if len(fp_parts) > 2 else None
     layer_category   = fp_parts[3] if len(fp_parts) > 3 else None
     _del_segment     = fp_parts[4].strip().lower() if len(fp_parts) > 4 else ""
-    deliverable_code = _DELIVERABLE_LOOKUP.get(_del_segment)
+    # deliverable_code is template-only: a guideline whose topic folder happens to match
+    # a deliverable name (Guidelines/BDCQ, Guidelines/F2S Workshops) must stay null, or
+    # filtered retrieval would mistake it for that deliverable's template.
+    _is_template     = (layer_category or "").strip().lower() in ("templates", "template")
+    deliverable_code = _DELIVERABLE_LOOKUP.get(_del_segment) if _is_template else None
+    # Layer3 templates nest a client folder after the deliverable
+    # (Templates/<deliverable>/<client>); Layer1/2 templates have no such level.
+    client_name      = fp_parts[5].strip() if (_is_template and len(fp_parts) > 5) else None
 
     return {
         "id":                 item_id,
@@ -323,6 +340,7 @@ def _flatten_item(item: dict) -> dict:
         "layer":              layer,
         "layer_category":     layer_category,
         "deliverable_code":   deliverable_code,
+        "client_name":        client_name,
     }
 
 
@@ -1907,11 +1925,80 @@ def _fmt_bytes(n: int) -> str:
     return f"{n:.2f} TB"
 
 
+# Folder names that mark the root of the BTP-Brain tree. Everything below one of
+# these is layer / layer_category / deliverable, in that order. SharePoint calls
+# the folder "BTP-Brain"; knowledge-ingest.js writes it to S3 under
+# "knowledge-base/" (see srv/lib/knowledge-ingest.js).
+_BRAIN_ROOTS = ("knowledge-base", "btp-brain")
+
+
+def _resolve_deliverable_code(segment: str) -> str | None:
+    """Map a BTP-Brain folder segment to a deliverable rowId.
+
+    Matches the folder against the short label ('KDD Framework'), the rowId
+    itself ('B10') and the full name ('Key Design Decisions Framework'), all
+    case-insensitively — the BTP-Brain folders are named by hand and do not
+    reliably use one form.
+    """
+    if not segment:
+        return None
+    key = segment.strip().lower()
+    return _DELIVERABLE_LOOKUP.get(key)
+
+
+def _parse_s3_tags(key: str) -> dict:
+    """Derive layer / layer_category / deliverable_code from an S3 object key.
+
+    The S3 mirror of the SharePoint path parsing in _flatten_item(). Given
+    'knowledge-base/Layer 1 - SAP Guidelines/Templates/KDD Framework/kdd.docx'
+    returns layer='Layer 1 - SAP Guidelines', layer_category='Templates',
+    deliverable_code='B10'.
+
+    Anchors on the BTP-Brain root folder rather than counting from position 0, so
+    the same key parses correctly whatever prefix it was vectorized under. Returns
+    None for any level the key does not reach — a file sitting directly in a layer
+    folder gets a layer and nothing else.
+    """
+    segments = [s for s in (key or "").split("/") if s]
+    if len(segments) < 2:
+        return {"layer": None, "layer_category": None, "deliverable_code": None}
+
+    # Drop the filename — only folders carry tags.
+    folders = segments[:-1]
+
+    anchor = None
+    for i, seg in enumerate(folders):
+        if seg.strip().lower() in _BRAIN_ROOTS:
+            anchor = i
+            break
+    # No recognisable root: assume the first segment is the prefix and read on.
+    start = (anchor + 1) if anchor is not None else 1
+
+    def at(offset: int):
+        idx = start + offset
+        return folders[idx] if idx < len(folders) else None
+
+    # Layout mirrors _flatten_item: <layer>/<Guidelines|Templates>/<deliverable>[/<client>].
+    # deliverable_code is template-only, so a guideline topic folder that matches a
+    # deliverable name stays null; the Layer3 client folder after the deliverable is ignored.
+    layer_category      = at(1)
+    deliverable_segment = at(2)
+    _is_template        = (layer_category or "").strip().lower() in ("templates", "template")
+    return {
+        "layer":            at(0),
+        "layer_category":   layer_category,
+        "deliverable_code": _resolve_deliverable_code(deliverable_segment) if _is_template else None,
+        # Layer3 templates nest a client folder after the deliverable; ignored elsewhere.
+        "client_name":      at(3) if _is_template else None,
+    }
+
+
 def _s3_obj_to_item(obj: dict) -> dict:
     """Convert an s3.list_objects() dict to the item shape expected by db.ingest()."""
     key      = obj["key"]
     filename = key.split("/")[-1] if "/" in key else key
     ext      = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    tags     = _parse_s3_tags(key)
     return {
         "id":                 obj.get("etag", key),
         "name":               filename,
@@ -1929,6 +2016,11 @@ def _s3_obj_to_item(obj: dict) -> dict:
         "version_count":      0,
         "etag":               obj.get("etag", ""),
         "storage_class":      obj.get("storage_class", "STANDARD"),
+        "layer":              tags["layer"],
+        "layer_category":     tags["layer_category"],
+        "deliverable_code":   tags["deliverable_code"],
+        "project":            None,
+        "client_name":        tags["client_name"],
     }
 
 
@@ -2152,15 +2244,22 @@ def _download_and_vectorize_tmp(paths: list[str], logger: logging.Logger = None,
     return n_chunks, n_files, path_chunks, path_raw, path_vectors, path_root, path_html, path_log, ingest_results
 
 
-def _download_and_vectorize_s3(objects: list[dict], logger: logging.Logger = None, skip_ingest: bool = False) -> tuple:
+def _download_and_vectorize_s3(objects: list[dict], logger: logging.Logger = None, skip_ingest: bool = False,
+                               tag_overrides: dict = None) -> tuple:
     """
     S3 variant of _download_and_vectorize.
     Downloads each object via s3.download_bytes(), then runs the same
     extract → chunk → embed → HANA upsert pipeline.
 
+    `tag_overrides` forces layer / layer_category / deliverable_code / project
+    onto every item in the run, overriding whatever _parse_s3_tags() derived from
+    the key. Use it when the S3 layout does not follow the BTP-Brain convention.
+
     Returns: (n_chunks, n_files, path_chunks, path_raw, path_vectors, path_html, path_log, ingest_results)
     """
     import s3 as s3_client
+
+    overrides = {k: v for k, v in (tag_overrides or {}).items() if v not in (None, "")}
 
     _log     = logger or log
     ts       = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -2185,10 +2284,24 @@ def _download_and_vectorize_s3(objects: list[dict], logger: logging.Logger = Non
         key      = obj["key"]
         filename = key.split("/")[-1] if "/" in key else key
         item     = _s3_obj_to_item(obj)
+        item.update(overrides)
         item_id  = item["id"]
 
+        # Stamped onto every chunk and vector row so retrieval can filter on them
+        # without joining back to the file registry.
+        tags = {
+            "layer":            item.get("layer"),
+            "layer_category":   item.get("layer_category"),
+            "deliverable_code": item.get("deliverable_code"),
+            "project":          item.get("project"),
+            "client_name":      item.get("client_name"),
+        }
+
         print(f"[{idx}/{len(objects)}] ── {key} ({item['size']})")
-        _log.info(f"[S3 FILE {idx}/{len(objects)}] START — key={key} size={item['size']}")
+        _log.info(
+            f"[S3 FILE {idx}/{len(objects)}] START — key={key} size={item['size']} "
+            f"layer={tags['layer']!r} category={tags['layer_category']!r} deliverable={tags['deliverable_code']!r}"
+        )
 
         # ── STEP 1: Download from S3 ──────────────────────────────────────────
         try:
@@ -2248,8 +2361,10 @@ def _download_and_vectorize_s3(objects: list[dict], logger: logging.Logger = Non
         try:
             for i, chunk_text in enumerate(chunks, start=1):
                 embedding = _get_embed_model().encode(chunk_text, normalize_embeddings=True).tolist()
-                file_chunks.append({"item_id": item_id, "filename": filename, "chunk_id": i, "chunk_data": chunk_text})
-                file_vectors.append({"item_id": item_id, "filename": filename, "chunk_id": i, "vector_data": embedding})
+                file_chunks.append({"item_id": item_id, "filename": filename, "chunk_id": i,
+                                    "chunk_data": chunk_text, **tags})
+                file_vectors.append({"item_id": item_id, "filename": filename, "chunk_id": i,
+                                     "vector_data": embedding, **tags})
         except Exception as e:
             _log.error(f"  [STEP 4/5 EMBED] FAILED — {type(e).__name__}: {e}  key={key}", exc_info=True)
             skips.append({"filename": key, "size": item["size"], "outcome": "embed_error"})
@@ -2568,7 +2683,30 @@ class VectorizeRequest(BaseModel):
     items:    list[dict] | None = Field(None, description="Explicit list of SharePoint item dicts to vectorize (as returned by /files or /files/all). Omit to auto-fetch all root files with version history via the delta API.")
     save_dir: str        | None = Field(None, description="Absolute path for output JSONL/JSON files. Defaults to DOWNLOAD_PATH/<YYYYMMDD>/.")
 
-class S3VectorizeRequest(BaseModel):
+class _TagOverrides(BaseModel):
+    """Explicit retrieval tags, overriding whatever the S3 key implies.
+
+    Leave these null for anything under the BTP-Brain tree — _parse_s3_tags()
+    derives them from the folder path. Set them when the layout does not follow
+    the convention, or to scope a batch to a single project.
+    """
+    layer:            str | None = Field(None, description="Overrides the layer derived from the key.")
+    layer_category:   str | None = Field(None, description="Overrides the layer category derived from the key.")
+    deliverable_code: str | None = Field(None, description="Overrides the deliverable rowId, e.g. 'B10'.")
+    project:          str | None = Field(None, description="Scopes these chunks to a project. Null = global reference material.")
+    client_name:      str | None = Field(None, description="Overrides the client derived from a Layer3 template path, e.g. 'ABB Files'.")
+
+    def as_overrides(self) -> dict:
+        return {
+            "layer":            self.layer,
+            "layer_category":   self.layer_category,
+            "deliverable_code": self.deliverable_code,
+            "project":          self.project,
+            "client_name":      self.client_name,
+        }
+
+
+class S3VectorizeRequest(_TagOverrides):
     prefix:     str       = Field(...,  description="S3 folder prefix to scan, e.g. 'BTP-Catalyst/' or 'knowledge-base/docs/'")
     force:      bool      = Field(False, description="When true, re-vectorize all files even if unchanged in HANA")
     extensions: list[str] = Field(
@@ -2576,7 +2714,7 @@ class S3VectorizeRequest(BaseModel):
         description="Whitelist of file extensions to process (lowercase, no dot). Empty list = all supported types.",
     )
 
-class S3VectorizeItemRequest(BaseModel):
+class S3VectorizeItemRequest(_TagOverrides):
     key:   str  = Field(...,  description="Full S3 object key, e.g. 'BTP-Catalyst/docs/report.pdf'")
     force: bool = Field(False, description="When true, re-vectorize even if the file is already up-to-date in HANA")
 
@@ -3409,6 +3547,7 @@ def vectorize_folder(
     folder_path: str,
     delay:     float = Query(1.0,  ge=0.0, le=10.0, description="Seconds between per-file version-fetch requests to avoid 429 throttling. Range: 0–10 s."),
     use_delta: bool  = Query(True, description="When true (default), uses :/delta — recursive and change-tracked. When false, uses :/children — direct children only."),
+    force:     bool  = Query(False, description="Skip change detection and re-vectorize all files under the folder regardless of last-modified date. Needed after a folder reorg, since moving a file leaves lastModifiedDateTime unchanged and it would otherwise be skipped."),
 ):
     """
     Same pipeline as `GET /vectorize` but scoped to a single SharePoint subfolder.
@@ -3459,7 +3598,11 @@ def vectorize_folder(
     #     db.ingest_file_registry(items, source="sharepoint")
     # except Exception as _e:
     #     clog.warning(f"file_registry ingest skipped: {_e}")
-    to_process, skipped_unchanged = _filter_stale_items(items, logger=clog)
+    if force:
+        clog.info("force=True — bypassing change detection, re-vectorizing all files under folder")
+        to_process, skipped_unchanged = items, 0
+    else:
+        to_process, skipped_unchanged = _filter_stale_items(items, logger=clog)
     clog.info(f"Starting vectorization — {len(to_process)} files to process, {skipped_unchanged} unchanged")
 
     db_result = {}
@@ -3595,7 +3738,8 @@ def vectorize_s3(req: S3VectorizeRequest, skip_ingest: bool = False):
     # ── 3. Download → extract → chunk → embed → HANA ─────────────────────────
     try:
         n_chunks, n_files, path_chunks, path_raw, path_vectors, path_root, path_html, path_log, ingest_results = \
-            _download_and_vectorize_s3(to_process, logger=clog, skip_ingest=skip_ingest)
+            _download_and_vectorize_s3(to_process, logger=clog, skip_ingest=skip_ingest,
+                                       tag_overrides=req.as_overrides())
     except Exception as e:
         clog.error(f"S3 vectorization failed: {type(e).__name__}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"S3 vectorization failed: {e}")
@@ -3808,7 +3952,7 @@ def vectorize_s3_item(req: S3VectorizeItemRequest):
     # ── Download → extract → chunk → embed → HANA ────────────────────────────
     try:
         n_chunks, n_files, path_chunks, path_raw, path_vectors, path_root, path_html, path_log, ingest_results = \
-            _download_and_vectorize_s3([obj], logger=clog)
+            _download_and_vectorize_s3([obj], logger=clog, tag_overrides=req.as_overrides())
     except Exception as e:
         clog.error(f"S3 item vectorization failed: {type(e).__name__}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"S3 item vectorization failed: {e}")

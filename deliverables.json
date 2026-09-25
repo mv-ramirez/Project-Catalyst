@@ -1,0 +1,21 @@
+[
+  { "rowId": "A1",  "short": "DDA",                 "name": "Digital Discovery Assessment",                 "phase": "discover" },
+  { "rowId": "A2",  "short": "Solution Plan",       "name": "Solution Plan and DCSO",                       "phase": "discover" },
+  { "rowId": "B10", "short": "KDD Framework",       "name": "Key Design Decisions Framework",               "phase": "prepare"  },
+  { "rowId": "B3",  "short": "BDCQ",                "name": "Business Driven Configuration Questionnaire",  "phase": "prepare"  },
+  { "rowId": "B15", "short": "Governance Plan",     "name": "Governance Plan",                              "phase": "prepare"  },
+  { "rowId": "B16", "short": "RAID Log",            "name": "RAID Log",                                     "phase": "prepare"  },
+  { "rowId": "C1",  "short": "F2S Workshops",       "name": "Fit-to-Standard Workshops",                    "phase": "explore"  },
+  { "rowId": "C3",  "short": "Fit-Gap Record",      "name": "Fit-Gap Requirements Log",                     "phase": "explore"  },
+  { "rowId": "C7",  "short": "KDD Register",        "name": "Key Design Decisions Register",                "phase": "explore"  },
+  { "rowId": "C5",  "short": "FDD",                 "name": "Functional Design Document",                   "phase": "explore"  },
+  { "rowId": "D3",  "short": "TDD",                 "name": "Technical Design Document",                    "phase": "realize"  },
+  { "rowId": "D1",  "short": "CBC Values",          "name": "CBC Configuration Values",                     "phase": "realize"  },
+  { "rowId": "D4",  "short": "RICEFW Build",        "name": "RICEFW Build",                                 "phase": "realize"  },
+  { "rowId": "E1",  "short": "Cutover Plan",        "name": "Cutover Plan",                                 "phase": "deploy"   },
+  { "rowId": "E2",  "short": "Hypercare Plan",      "name": "Hypercare Plan",                               "phase": "deploy"   },
+  { "rowId": "E3",  "short": "Training",            "name": "Training Materials",                           "phase": "deploy"   },
+  { "rowId": "E4",  "short": "Go-Live",             "name": "Go-Live Readiness",                            "phase": "deploy"   },
+  { "rowId": "F1",  "short": "Ops Backlog",         "name": "Operations Backlog",                           "phase": "run"      },
+  { "rowId": "F2",  "short": "CI Log",              "name": "Continuous Improvement Log",                   "phase": "run"      }
+]

@@ -14,6 +14,17 @@ applications:
     env:
       ENABLE_DESTRUCTIVE: "false"
       ENABLE_DEBUG: "false"
+      # ── BRAIN table sets (HDI migration) ───────────────────────────────────
+      # legacy = CATALYSTPLATFORM_BRAIN_*    (created by this app via /db/init)
+      # hdi    = CATALYSTPLATFORM_TB_BRAIN_* (owned by the HDI db module in
+      #                                       BTP-Catalyst-Platform/db/src/)
+      #
+      # Set BRAIN_WRITE_SET to "both" to dual-write: every ingest lands in both
+      # sets, so the HDI tables fill from ordinary API traffic while legacy stays
+      # authoritative. Then GET /db/tables to confirm the row counts agree.
+      # Flip BRAIN_READ_SET to "hdi" only once they do.
+      BRAIN_READ_SET: "hdi"
+      BRAIN_WRITE_SET: "hdi"
       HOSTNAME: z0y8z.sharepoint.com
       SITE_PATH: /sites/BTP-CatalystPlatform
       DOWNLOAD_PATH: /tmp

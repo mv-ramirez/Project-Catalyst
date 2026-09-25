@@ -311,22 +311,92 @@ All `/files` endpoints require SharePoint connection (`require_connection`).
 
 | Method | Path | Description |
 |---|---|---|
-| `POST` | `/db/query` | Vector similarity search. Body: `{"text": "...", "top_k": 5}`. Returns top-k chunks with cosine scores. |
-| `GET` | `/db/vectors/{item_id}` | Return decoded `REAL_VECTOR(384)` rows from `BRAIN_VECTORS` for a given `item_id`. Response includes `chunk_id` and `vector` float array (384 elements). |
+| `POST` | `/db/query` | **Layer-filtered** vector similarity search. Body: `{"text": "...", "top_k": 5, "layer": ..., "deliverable_code": ..., "min_score": 0.25}`. Returns top-k chunks with cosine scores and their tags. See [Filtered retrieval](#filtered-retrieval). |
+| `POST` | `/db/chunks` | **Deterministic** tag-only fetch — no query text, no ranking. Returns every matching chunk ordered by `filename, chunk_id`. At least one filter is required (a filterless call returns 400 rather than the whole KB). Used to pull a deliverable's template whole and in order. |
+| `GET` | `/db/tables` | Which BRAIN table set is active (`read_set`, `write_sets`) plus per-table presence and row counts for **both** the legacy `BRAIN_*` and HDI `TB_BRAIN_*` sets, with a `matched` flag per table. Read-only. |
+| `GET` | `/db/vectors/{item_id}` | Return decoded `REAL_VECTOR(384)` rows for a given `item_id`. Response includes `chunk_id` and `vector` float array (384 elements). |
 | `POST` | `/db/sql` | Run a validated **SELECT-only** SQL query against HANA. Body: `SqlRequest`. Guards: first keyword must be `SELECT`; blocks DML/DDL, `--`/`/* */` comments, semicolons, and dangerous keywords (`DROP`, `DELETE`, `INSERT`, `UPDATE`, `EXEC`, etc.). |
-| `GET` | `/db/files` | List all rows in `BRAIN_SP_FILES`. |
+| `GET` | `/db/files` | List all rows in the active SP files table. |
 | `GET` | `/db/chunks/{item_id}` | Get all chunks for a file. |
-| `GET` | `/db/versions` | List all rows in `BRAIN_FILES_VERSIONS`. |
+| `GET` | `/db/versions` | List all version rows. |
 | `GET` | `/db/versions/{item_id}` | Get version history for a specific file. |
-| `GET` | `/db/chunk-summary` | List all rows in `BRAIN_FILES_CHUNK` (one row per file with chunk count). |
+| `GET` | `/db/chunk-summary` | List all raw-chunk rows (one row per file chunk). |
 | `GET` | `/db/chunk-summary/{item_id}` | Get chunk count summary for a specific file. |
-| `DELETE` | `/db/item/{item_id}` | Delete a file + its chunks + vectors. Requires `ENABLE_DESTRUCTIVE=true`. |
-| `POST` | `/db/init` | Create all BRAIN tables (idempotent). |
-| `POST` | `/db/migrate` | Apply schema migrations (add `source` column). |
-| `POST` | `/db/drop` | Drop all BRAIN tables entirely. Requires `ENABLE_DESTRUCTIVE=true` + `?confirm=true`. |
-| `POST` | `/db/truncate` | Delete all rows from all BRAIN tables. Requires `ENABLE_DESTRUCTIVE=true` + `?confirm=true`. |
-| `GET` | `/db/file-registry` | List `BRAIN_FILE_REGISTRY` rows. Query: `source`, `limit`, `offset`. |
+| `DELETE` | `/db/item/{item_id}` | Delete a file + its chunks + vectors, from **every** configured write set. Requires `ENABLE_DESTRUCTIVE=true`. |
+| `POST` | `/db/init` | Create the **legacy** `BRAIN_*` tables (idempotent). Returns **409** when `BRAIN_READ_SET=hdi` — the `TB_BRAIN_*` tables are owned by the HDI `db` module and must be created by deploying it. |
+| `POST` | `/db/migrate` | Additive column migrations on the **legacy** tables (idempotent): adds `source` plus the `layer` / `layer_category` / `deliverable_code` / `project` retrieval tags to SP_FILES, S3_FILES, TEXT_CHUNKS and VECTORS. Returns **409** when `BRAIN_READ_SET=hdi`. |
+| `POST` | `/db/drop` | Drop the orphaned pre-HDI tables. Requires `ENABLE_DESTRUCTIVE=true` + `?confirm=true`. Returns **409** when `BRAIN_READ_SET=hdi`. |
+| `POST` | `/db/truncate` | Delete all rows. Requires `ENABLE_DESTRUCTIVE=true` + `?confirm=true`. Clears every configured write set; pass `?table_set=hdi` to reset only the HDI duplicates between test runs. |
+| `GET` | `/db/file-registry` | List file-registry rows. Query: `source`, `limit`, `offset`. |
 | `POST` | `/db/backup` | Dump all BRAIN tables to JSONL and upload to S3. Body: `{"s3_dir": "...", "include_vectors": true}`. |
+| `POST` | `/db/backfill` | Copy rows that exist in the **legacy** `BRAIN_*` tables but are missing from the **HDI** `TB_BRAIN_*` tables (INSERT … WHERE NOT EXISTS on PK — idempotent). Body: `{}` for all tables or `{"table": "vectors"}` for one. Returns per-table inserted count; skips tables that don't exist yet. Requires the HDI db module to be deployed first. |
+
+---
+
+### Table sets — the HDI migration
+
+The BRAIN tables exist twice while ownership moves from Python to the HDI `db`
+module in BTP-Catalyst-Platform:
+
+| Set | Tables | Owner |
+|---|---|---|
+| `legacy` | `CATALYSTPLATFORM_BRAIN_*` | created by `db.py` (`/db/init`) |
+| `hdi` | `CATALYSTPLATFORM_TB_BRAIN_*` | `db/src/*.hdbmigrationtable` in BTP-Catalyst-Platform |
+
+Two env vars select which set is used. Both default to `legacy`, so a plain
+`cf push` behaves exactly as before.
+
+| Variable | Values | Default | Effect |
+|---|---|---|---|
+| `BRAIN_READ_SET` | `legacy` \| `hdi` | `legacy` | Which set every SELECT reads from. |
+| `BRAIN_WRITE_SET` | `legacy` \| `hdi` \| `both` | `legacy` | Which set(s) receive writes. |
+
+**`BRAIN_WRITE_SET=both` is the migration-testing mode:** every ingest lands in
+both sets, so the HDI tables fill with real data from ordinary API traffic while
+the legacy tables stay authoritative. Writes to the *read* set are primary and a
+failure there raises as usual; writes to the other set are best-effort — failures
+are logged and returned in the ingest result under `errors`, never breaking the
+live path. `GET /db/tables` then shows both sets side by side with a `matched`
+flag so you can confirm they agree.
+
+Python issues **no DDL** against the HDI set. `/db/init`, `/db/migrate` and
+`/db/drop` return 409 when `BRAIN_READ_SET=hdi`.
+
+---
+
+### Filtered retrieval
+
+`POST /db/query` accepts these filters alongside `text` and `top_k`. Each takes a
+single value or a list (list → SQL `IN`). Filters are applied **before** the
+cosine ranking, so `top_k` counts rows that already matched.
+
+| Filter | Example |
+|---|---|
+| `layer` | `"Layer 1 - SAP Guidelines"` or `["Layer 1 - SAP Guidelines", "Layer 2 - Accenture Guidelines"]` |
+| `layer_category` | `"Templates"` |
+| `deliverable_code` | `"B10"` — deliverable rowId, from `deliverables.json` |
+| `project` | `"ACME-2026"`; `null` for global reference material |
+| `source` | `"sharepoint"` \| `"s3"` |
+| `min_score` | `0.25` — cosine floor; weaker matches are dropped |
+
+An unknown filter column returns **400** rather than being ignored — a typo that
+silently matched everything would hand back the whole knowledge base, which is
+the failure this endpoint exists to prevent.
+
+Tags are derived from the BTP-Brain folder path at vectorize time
+(`_parse_s3_tags` / `_flatten_item` in `api.py`):
+`knowledge-base/<layer>/<layer_category>/<deliverable>/<file>`. The deliverable
+folder is matched case-insensitively against the short label, rowId or full name
+in `deliverables.json`. Explicit overrides can be passed on the vectorize
+requests (`layer`, `layer_category`, `deliverable_code`, `project`) when the S3
+layout does not follow that convention.
+
+**Consumer:** `srv/lib/brain-retrieval.js` in BTP-Catalyst-Platform calls
+`/db/chunks` for the deliverable's template (deterministic, whole, in order) and
+`/db/query` for its guidelines (semantic, multi-query, relevance-ranked), then
+assembles both into the reference block injected into generation and findings
+prompts. Node never embeds anything — one model on both sides keeps the
+similarity scores comparable.
 
 ---
 
@@ -573,6 +643,8 @@ After every batch:
 | `HF_HUB_DISABLE_IMPLICIT_TOKEN` | `1` | Suppress HuggingFace token warning |
 | `TOKENIZERS_PARALLELISM` | `false` | Prevent tokenizer fork warnings |
 | `ENABLE_DESTRUCTIVE` | `false` | Must be `true` to enable DELETE endpoints (`/storage`, `/s3`, `/db/item`) and destructive DB operations (`/db/drop`, `/db/truncate`). Default `false` on every `cf push`. |
+| `BRAIN_READ_SET` | `legacy` | Which BRAIN table set SELECTs read from: `legacy` or `hdi`. See [Table sets](#table-sets--the-hdi-migration). |
+| `BRAIN_WRITE_SET` | `legacy` | Which set(s) receive writes: `legacy`, `hdi`, or `both` (dual-write, for migration testing). |
 | `ENABLE_DEBUG` | `false` | Must be `true` to enable `/debug/*` endpoints |
 | `PORT` | `8000` | Port uvicorn binds to (set by CF automatically) |
 | `VCAP_SERVICES` | — | Injected by CF — contains all bound service credentials |
