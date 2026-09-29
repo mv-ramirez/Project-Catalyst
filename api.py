@@ -20,7 +20,7 @@ from docx import Document
 import openpyxl
 import pdfplumber
 from pptx import Presentation
-from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, HTMLResponse
 from pydantic import BaseModel, Field
@@ -2621,11 +2621,23 @@ The `db_ingest.sp_files_versions` field in every response shows how many records
 | **database** | HANA vector search, CRUD, table management (`/db/*` routes) |
 """
 
+
+def require_auth(request: Request, x_api_key: str = Header(default=None, alias="X-API-Key")):
+    if request.url.path == "/health":
+        return  # CF health-check probe — always public
+    secret = os.getenv("API_SECRET_KEY")
+    if not secret:
+        return  # auth disabled — no key configured
+    if x_api_key != secret:
+        raise HTTPException(status_code=401, detail="Invalid or missing API key")
+
+
 app = FastAPI(
-    title       = "SharePoint RAG API",
-    version     = "1.0.0",
-    description = _DESCRIPTION,
-    lifespan    = lifespan,
+    title        = "SharePoint RAG API",
+    version      = "1.0.0",
+    description  = _DESCRIPTION,
+    lifespan     = lifespan,
+    dependencies = [Depends(require_auth)],
     openapi_tags = [
         {"name": "system",   "description": "Health checks and connectivity diagnostics for SharePoint, HANA, S3, and BTP Destination Service."},
         {"name": "files",    "description": "List SharePoint files, sync metadata to HANA, download file bytes, and rebuild files from stored chunks."},
