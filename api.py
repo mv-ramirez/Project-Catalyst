@@ -2662,7 +2662,7 @@ app.add_middleware(
 )
 
 app.include_router(db.router)
-app.mount("/mcp", mcp_server.get_asgi_app())
+app.include_router(mcp_server.router)
 
 
 # ── Dependency ────────────────────────────────────────────────────────────────
