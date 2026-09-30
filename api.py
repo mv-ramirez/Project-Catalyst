@@ -26,6 +26,7 @@ from fastapi.responses import StreamingResponse, HTMLResponse
 from pydantic import BaseModel, Field
 import uvicorn
 import db
+import mcp as mcp_server
 import s3
 import s4
 
@@ -2661,6 +2662,7 @@ app.add_middleware(
 )
 
 app.include_router(db.router)
+app.include_router(mcp_server.router)
 
 
 # ── Dependency ────────────────────────────────────────────────────────────────

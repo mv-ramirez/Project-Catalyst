@@ -30,3 +30,6 @@ boto3>=1.34.0
 # ── Additional document formats (api.py) ──────────────────────────────────────
 striprtf>=0.0.26
 extract-msg>=0.28.0
+
+# ── MCP server (mcp.py) ───────────────────────────────────────────────────────
+mcp>=1.0.0
