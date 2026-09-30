@@ -85,6 +85,38 @@ async def _list_tools():
                 "required": ["s3_key"],
             },
         ),
+        Tool(
+            name="publish_abap",
+            description=(
+                "Download an ABAP source file from S3 and publish it to S/4HANA Cloud via ADT REST API. "
+                "Requires S4_USER and S4_PASSWORD to be configured in the BTP environment, "
+                "or pass s4_user/s4_password in the arguments. "
+                "The Communication User must have the ADT business catalog assigned."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "s3_key":       {"type": "string", "description": "S3 object key of the .abap source file"},
+                    "package":      {"type": "string", "description": "ABAP package (e.g. ZLOCAL)"},
+                    "program_name": {"type": "string", "description": "ABAP program name (e.g. ZMYPROGRAM)"},
+                    "s4_user":      {"type": "string", "description": "Override Communication User (optional)"},
+                    "s4_password":  {"type": "string", "description": "Override Communication User password (optional)"},
+                },
+                "required": ["s3_key", "package", "program_name"],
+            },
+        ),
+        Tool(
+            name="test_s4_connection",
+            description="Test connectivity and authentication to S/4HANA ADT. Returns connection status and CSRF token validity.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "s4_user":     {"type": "string", "description": "Override Communication User (optional)"},
+                    "s4_password": {"type": "string", "description": "Override password (optional)"},
+                },
+                "required": [],
+            },
+        ),
     ]
 
 
@@ -134,6 +166,52 @@ async def _call_tool(name: str, arguments: dict):
             s3_key = arguments.get("s3_key", "")
             url    = s3.get_presigned_url(s3_key, expiry=3600)
             return [TextContent(type="text", text=json.dumps({"url": url, "expires_in": "1 hour"}))]
+
+        elif name == "publish_abap":
+            import s4
+            s3_key       = arguments.get("s3_key", "")
+            package      = arguments.get("package", "")
+            program_name = arguments.get("program_name", "")
+            s4_user      = arguments.get("s4_user")
+            s4_password  = arguments.get("s4_password")
+
+            # Download source from S3
+            source_bytes = s3.download_bytes(s3_key)
+            source_code  = source_bytes.decode("utf-8")
+
+            # Publish to S/4HANA via ADT
+            session, base_url, _ = s4.get_s4_session(
+                override_user=s4_user,
+                override_pass=s4_password,
+            )
+            result = s4.publish_abap(
+                session=session,
+                base_url=base_url,
+                package=package,
+                program_name=program_name,
+                source_code=source_code,
+            )
+            return [TextContent(type="text", text=json.dumps(result, indent=2, ensure_ascii=False))]
+
+        elif name == "test_s4_connection":
+            import s4
+            s4_user     = arguments.get("s4_user")
+            s4_password = arguments.get("s4_password")
+            try:
+                session, base_url, _ = s4.get_s4_session(
+                    override_user=s4_user,
+                    override_pass=s4_password,
+                )
+                csrf = s4.fetch_csrf_token(session, base_url)
+                result = {
+                    "connected":   True,
+                    "base_url":    base_url,
+                    "csrf_token":  csrf[:8] + "..." if csrf else None,
+                    "auth_method": "override" if s4_user else ("env_var" if __import__("os").getenv("S4_USER") else "destination"),
+                }
+            except Exception as exc:
+                result = {"connected": False, "error": str(exc), "base_url": s4.S4_BASE_URL}
+            return [TextContent(type="text", text=json.dumps(result, indent=2, ensure_ascii=False))]
 
         else:
             return [TextContent(type="text", text=f"Unknown tool: {name}")]
