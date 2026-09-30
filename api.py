@@ -2628,7 +2628,11 @@ def require_auth(request: Request, x_api_key: str = Header(default=None, alias="
     secret = os.getenv("API_SECRET_KEY")
     if not secret:
         return  # auth disabled — no key configured
-    if x_api_key != secret:
+    valid = {secret}
+    old = os.getenv("API_SECRET_KEY_OLD")
+    if old:
+        valid.add(old)
+    if x_api_key not in valid:
         raise HTTPException(status_code=401, detail="Invalid or missing API key")
 
 
@@ -2805,6 +2809,12 @@ class S3PresignedUploadRequest(BaseModel):
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
+
+@app.post("/admin/generate-key", include_in_schema=False, dependencies=[Depends(require_auth)])
+def admin_generate_key():
+    import secrets
+    return {"api_key": secrets.token_urlsafe(32)}
+
 
 @app.get("/health", tags=["system"], summary="Application health check")
 def health():
