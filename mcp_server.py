@@ -117,6 +117,50 @@ async def _list_tools():
                 "required": [],
             },
         ),
+        Tool(
+            name="list_sharepoint_files",
+            description=(
+                "Fetch all files from the SharePoint root drive via the Graph delta API and sync their "
+                "metadata to HANA (BRAIN_SP_FILES). Returns the full file list with name, size, extension, "
+                "and last-modified date. Does NOT download or vectorize — use run_pipeline for that."
+            ),
+            inputSchema={"type": "object", "properties": {}, "required": []},
+        ),
+        Tool(
+            name="search_sharepoint_files",
+            description=(
+                "Search SharePoint for files whose name contains the given query string (case-insensitive). "
+                "Uses the Graph API search endpoint. Returns matching file metadata including item ID, name, "
+                "size, and web URL. Read-only — does not ingest or vectorize."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Filename or partial filename to search for"},
+                },
+                "required": ["query"],
+            },
+        ),
+        Tool(
+            name="run_pipeline",
+            description=(
+                "Run the full RAG pipeline: fetch all SharePoint root files with version history, "
+                "detect changes, download, extract text, chunk, embed, and upsert vectors to HANA. "
+                "Also saves output files and uploads them to S3. This is the main indexing operation — "
+                "run it after new files are added to SharePoint."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "delay": {
+                        "type": "number",
+                        "description": "Seconds between SharePoint version-fetch requests to avoid throttling (default: 1.0, range: 0–10)",
+                        "default": 1.0,
+                    },
+                },
+                "required": [],
+            },
+        ),
     ]
 
 
@@ -212,6 +256,54 @@ async def _call_tool(name: str, arguments: dict):
             except Exception as exc:
                 result = {"connected": False, "error": str(exc), "base_url": s4.S4_BASE_URL}
             return [TextContent(type="text", text=json.dumps(result, indent=2, ensure_ascii=False))]
+
+        elif name == "list_sharepoint_files":
+            from api import _get_root_files
+            import db as _db
+            files = _get_root_files()
+            db_result = _db.ingest([], [], files)
+            summary = {
+                "count": len(files),
+                "db_ingest": db_result,
+                "files": [
+                    {k: f.get(k) for k in ("name", "extension", "size", "last_modified", "web_url")}
+                    for f in files[:50]  # cap at 50 to keep response readable
+                ],
+            }
+            if len(files) > 50:
+                summary["note"] = f"Showing 50 of {len(files)} files"
+            return [TextContent(type="text", text=json.dumps(summary, indent=2, ensure_ascii=False))]
+
+        elif name == "search_sharepoint_files":
+            from api import _search_files_by_name
+            query = arguments.get("query", "")
+            results = _search_files_by_name(query)
+            return [TextContent(type="text", text=json.dumps(
+                {"query": query, "count": len(results), "items": results},
+                indent=2, ensure_ascii=False,
+            ))]
+
+        elif name == "run_pipeline":
+            import os, requests as req_lib
+            delay   = float(arguments.get("delay", 1.0))
+            port    = os.getenv("PORT", "8080")
+            api_key = os.getenv("API_SECRET_KEY", "")
+            resp = req_lib.post(
+                f"http://127.0.0.1:{port}/pipeline",
+                json={"delay": delay},
+                headers={"X-API-Key": api_key},
+                timeout=600,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            summary = {
+                "count_root_files":  data.get("count_root_files"),
+                "count_files":       data.get("count_files"),
+                "count_chunks":      data.get("count_chunks"),
+                "skipped_unchanged": data.get("skipped_unchanged"),
+                "saved_to":          data.get("saved_to"),
+            }
+            return [TextContent(type="text", text=json.dumps(summary, indent=2, ensure_ascii=False))]
 
         else:
             return [TextContent(type="text", text=f"Unknown tool: {name}")]
