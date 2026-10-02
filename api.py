@@ -2839,7 +2839,7 @@ def admin_export_table(
     if tname not in _EXPORT_ALLOWED:
         raise HTTPException(status_code=403, detail=f"Export not allowed for: {table_name}")
     try:
-        conn = db._connect()
+        conn = db._get_connection()
         cur  = conn.cursor()
         # column names
         cur.execute(
