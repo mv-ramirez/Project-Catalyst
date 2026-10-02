@@ -2818,6 +2818,47 @@ def admin_generate_key():
     return {"api_key": secrets.token_urlsafe(32)}
 
 
+# Allowed tables for export — HDI TB_BRAIN set only (no vectors — too large)
+_EXPORT_ALLOWED = {
+    "CATALYSTPLATFORM_TB_BRAIN_SP_FILES",
+    "CATALYSTPLATFORM_TB_BRAIN_S3_FILES",
+    "CATALYSTPLATFORM_TB_BRAIN_TEXT_CHUNKS",
+    "CATALYSTPLATFORM_TB_BRAIN_FILES_CHUNK",
+    "CATALYSTPLATFORM_TB_BRAIN_FILE_REGISTRY",
+    "CATALYSTPLATFORM_TB_BRAIN_SP_FILES_VERSIONS",
+}
+
+@app.get("/admin/export/{table_name}", include_in_schema=False, dependencies=[Depends(require_auth)])
+def admin_export_table(
+    table_name: str,
+    offset: int = Query(0,    ge=0,   description="Row offset"),
+    limit:  int = Query(500,  ge=1,   le=2000, description="Rows per page"),
+):
+    """Paginated JSON export of a TB_BRAIN table. Used for myDB migration."""
+    tname = table_name.upper()
+    if tname not in _EXPORT_ALLOWED:
+        raise HTTPException(status_code=403, detail=f"Export not allowed for: {table_name}")
+    try:
+        conn = db._get_connection()
+        cur  = conn.cursor()
+        # column names
+        cur.execute(
+            "SELECT COLUMN_NAME FROM TABLE_COLUMNS "
+            "WHERE SCHEMA_NAME = CURRENT_SCHEMA AND TABLE_NAME = ? ORDER BY POSITION",
+            (tname,)
+        )
+        columns = [r[0] for r in cur.fetchall()]
+        # data page
+        cur.execute(f'SELECT * FROM "{tname}" LIMIT ? OFFSET ?', (limit, offset))
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+        records = [dict(zip(columns, row)) for row in rows]
+        return {"table": tname, "offset": offset, "limit": limit, "count": len(records), "rows": records}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/health", tags=["system"], summary="Application health check")
 def health():
     """
