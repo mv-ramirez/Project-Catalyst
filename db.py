@@ -508,6 +508,55 @@ def describe_tables() -> dict:
 
 # ── Ingest ────────────────────────────────────────────────────────────────────
 
+def _unchanged_item_ids(cur, table: str, files_map: dict, source: str) -> set:
+    """Return item_ids whose stored date (+ etag for S3) matches the incoming record.
+
+    Compares:
+      - SP/SharePoint : last_modified  vs item["last_modified_date"]
+      - S3            : last_modified  vs item["last_modified_date"]
+                        etag           vs item["etag"]   (content hash)
+
+    Falls back to empty set (= treat everything as changed) on any DB error so the
+    upsert always runs when the change-check itself fails.
+    """
+    if not files_map:
+        return set()
+
+    item_ids = list(files_map.keys())
+    ph       = ", ".join(["?"] * len(item_ids))
+    cols     = "item_id, last_modified, etag" if source == "s3" else "item_id, last_modified"
+
+    try:
+        cur.execute(
+            f"SELECT {cols} FROM {_t(table)} WHERE item_id IN ({ph})",
+            tuple(item_ids),
+        )
+        rows = cur.fetchall()
+    except Exception as e:
+        log.warning(f"[DB] Change-check on {table} failed: {e} — treating all as changed")
+        return set()
+
+    unchanged = set()
+    for row in rows:
+        item_id = row[0]
+        db_date = row[1] or ""
+        item    = files_map.get(item_id)
+        if item is None:
+            continue
+        in_date = item.get("last_modified_date", "") or ""
+
+        if source == "s3":
+            db_etag = row[2] or ""
+            in_etag = item.get("etag", "") or ""
+            if db_date == in_date and db_etag == in_etag:
+                unchanged.add(item_id)
+        else:
+            if db_date == in_date:
+                unchanged.add(item_id)
+
+    return unchanged
+
+
 def _tags_of(record: dict, fallback: dict = None) -> tuple:
     """Pull the four retrieval tags off a chunk/vector/item dict, in column order.
 
@@ -585,9 +634,26 @@ def _ingest_into(tables: dict, chunks_data: list, vectors_data: list, items: lis
     # item_id → parent item, so a chunk with no tags of its own inherits the file's.
     tag_source = {item_id: item for item_id, item in files_map.items()}
     try:
+        # ── Skip unchanged files (compare last_modified; also etag for S3) ────
+        file_table = T_S3_FILES if source == "s3" else T_SP_FILES
+        unchanged  = _unchanged_item_ids(cur, file_table, files_map, source)
+        if unchanged:
+            log.info(
+                f"[DB] Skipping {len(unchanged)} unchanged file(s) — "
+                f"{len(files_map) - len(unchanged)} new/changed to upsert"
+            )
+
+        changed_files = {k: v for k, v in files_map.items() if k not in unchanged}
+        chunks_data   = [c for c in chunks_data  if c["item_id"] not in unchanged]
+        vectors_data  = [v for v in vectors_data if v["item_id"] not in unchanged]
+
+        if not changed_files and not chunks_data and not vectors_data:
+            log.info("[DB] All files unchanged — nothing to write")
+            return {"files": 0, "chunks": 0, "vectors": 0, "skipped": len(unchanged)}
+
         if source == "s3":
-            log.info(f"[DB STEP 1/3] Upserting {len(files_map)} file(s) into {T_S3_FILES}")
-            for item_id, item in files_map.items():
+            log.info(f"[DB STEP 1/3] Upserting {len(changed_files)} file(s) into {T_S3_FILES}")
+            for item_id, item in changed_files.items():
                 log.debug(f"  {T_S3_FILES} upsert — item_id={item_id} filename={item.get('name','')}")
                 try:
                     _s3_opt  = _optional_tag_cols(cur, T_S3_FILES)
@@ -615,8 +681,8 @@ def _ingest_into(tables: dict, chunks_data: list, vectors_data: list, items: lis
                     log.error(f"  {T_S3_FILES} upsert FAILED — item_id={item_id} filename={item.get('name','')}: {e}", exc_info=True)
                     raise
         else:
-            log.info(f"[DB STEP 1/3] Upserting {len(files_map)} file(s) into {T_SP_FILES}")
-            for item_id, item in files_map.items():
+            log.info(f"[DB STEP 1/3] Upserting {len(changed_files)} file(s) into {T_SP_FILES}")
+            for item_id, item in changed_files.items():
                 log.debug(f"  {T_SP_FILES} upsert — item_id={item_id} filename={item.get('name','')}")
                 try:
                     _sp_opt  = _optional_tag_cols(cur, T_SP_FILES)
@@ -693,7 +759,12 @@ def _ingest_into(tables: dict, chunks_data: list, vectors_data: list, items: lis
                 raise
 
         conn.commit()
-        result = {"files": len(files_map), "chunks": len(chunks_data), "vectors": len(vectors_data)}
+        result = {
+            "files":   len(changed_files),
+            "chunks":  len(chunks_data),
+            "vectors": len(vectors_data),
+            "skipped": len(unchanged),
+        }
         log.info(f"[DB] Ingest committed — {result}")
         return result
     except Exception as e:
@@ -720,8 +791,43 @@ def _ingest_raw_chunks_into(tables: dict, raw_chunk_records: list, source: str) 
     cur  = conn.cursor()
     now  = datetime.utcnow()
     try:
-        log.info(f"[DB] Upserting {len(raw_chunk_records)} raw chunk(s) into {T_FILES_CHUNK}")
+        # ── Skip unchanged chunks (compare chunk_datetime per item_id+chunk_id) ─
+        # Batch-fetch existing (item_id, chunk_id, chunk_datetime) for all incoming PKs.
+        existing_dates: dict[tuple, str] = {}
+        incoming_pks = [(rec["item_id"], rec["chunk_id"]) for rec in raw_chunk_records]
+        distinct_item_ids = list({item_id for item_id, _ in incoming_pks})
+        if distinct_item_ids:
+            ph = ", ".join(["?"] * len(distinct_item_ids))
+            try:
+                cur.execute(
+                    f"SELECT item_id, chunk_id, chunk_datetime FROM {_t(T_FILES_CHUNK)} "
+                    f"WHERE item_id IN ({ph})",
+                    tuple(distinct_item_ids),
+                )
+                for row in cur.fetchall():
+                    existing_dates[(row[0], row[1])] = row[2] or ""
+            except Exception as e:
+                log.warning(
+                    f"[DB] Change-check on {T_FILES_CHUNK} failed: {e} — treating all as changed"
+                )
+
+        to_write = []
         for rec in raw_chunk_records:
+            pk       = (rec["item_id"], rec["chunk_id"])
+            in_date  = rec.get("chunk_datetime", "") or ""
+            db_date  = existing_dates.get(pk)
+            if db_date is None or in_date != db_date:
+                to_write.append(rec)
+
+        skipped = len(raw_chunk_records) - len(to_write)
+        if skipped:
+            log.info(
+                f"[DB] raw_chunks: skipping {skipped} unchanged chunk(s), "
+                f"writing {len(to_write)}"
+            )
+
+        log.info(f"[DB] Upserting {len(to_write)} raw chunk(s) into {T_FILES_CHUNK}")
+        for rec in to_write:
             try:
                 cur.execute(
                     f"UPSERT {_t(T_FILES_CHUNK)} "
@@ -739,10 +845,14 @@ def _ingest_raw_chunks_into(tables: dict, raw_chunk_records: list, source: str) 
                     )
                 )
             except Exception as e:
-                log.error(f"  {T_FILES_CHUNK} upsert FAILED — item_id={rec['item_id']} chunk_id={rec['chunk_id']}: {e}", exc_info=True)
+                log.error(
+                    f"  {T_FILES_CHUNK} upsert FAILED — "
+                    f"item_id={rec['item_id']} chunk_id={rec['chunk_id']}: {e}",
+                    exc_info=True,
+                )
                 raise
         conn.commit()
-        result = {"raw_chunks": len(raw_chunk_records)}
+        result = {"raw_chunks": len(to_write), "skipped": skipped}
         log.info(f"[DB] ingest_raw_chunks committed — {result}")
         return result
     except Exception as e:
@@ -768,7 +878,34 @@ def _ingest_file_registry_into(tables: dict, items: list, source: str) -> dict:
     cur  = conn.cursor()
     now  = datetime.utcnow()
     try:
+        # ── Skip unchanged items (compare modified_datetime) ──────────────────
+        item_ids = [item.get("item_id", "") for item in items if item.get("item_id")]
+        existing = {}
+        if item_ids:
+            ph = ", ".join(["?"] * len(item_ids))
+            try:
+                cur.execute(
+                    f"SELECT item_id, modified_datetime FROM {_t(T_FILE_REGISTRY)} "
+                    f"WHERE item_id IN ({ph})",
+                    tuple(item_ids),
+                )
+                existing = {row[0]: (row[1] or "") for row in cur.fetchall()}
+            except Exception as e:
+                log.warning(f"[DB] Change-check on {T_FILE_REGISTRY} failed: {e} — treating all as changed")
+
+        to_write = []
         for item in items:
+            item_id = item.get("item_id", "")
+            in_date = item.get("modified_datetime") or item.get("last_modified_date", "") or ""
+            db_date = existing.get(item_id)
+            if db_date is None or in_date != db_date:
+                to_write.append(item)
+
+        skipped = len(items) - len(to_write)
+        if skipped:
+            log.info(f"[DB] file_registry: skipping {skipped} unchanged, writing {len(to_write)}")
+
+        for item in to_write:
             raw_name = item.get("filename") or item.get("key") or item.get("item_id", "")
             filename = raw_name.split("/")[-1] if raw_name else ""
             cur.execute(
@@ -784,8 +921,8 @@ def _ingest_file_registry_into(tables: dict, items: list, source: str) -> dict:
                 )
             )
         conn.commit()
-        log.info(f"Ingested {len(items)} rows into {T_FILE_REGISTRY} (source={source})")
-        return {"file_registry": len(items)}
+        log.info(f"Ingested {len(to_write)} rows into {T_FILE_REGISTRY} (source={source}, skipped={skipped})")
+        return {"file_registry": len(to_write), "skipped": skipped}
     except Exception:
         conn.rollback()
         raise
