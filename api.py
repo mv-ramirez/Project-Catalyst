@@ -1321,8 +1321,42 @@ def _extract_text(content: bytes, filename: str) -> str:
     try:
         if ext in ("docx", "dotx"):
             log.info("Extracting docx/dotx.")
+            import zipfile
+            from lxml import etree
             doc = Document(io.BytesIO(content))
-            return "\n".join(p.text for p in doc.paragraphs if p.text.strip())
+            lines = []
+            # Top-level paragraphs
+            for p in doc.paragraphs:
+                if p.text.strip():
+                    lines.append(p.text)
+            # Table cells (templates like RICEFW are table-heavy)
+            for table in doc.tables:
+                for row in table.rows:
+                    for cell in row.cells:
+                        cell_text = cell.text.strip()
+                        if cell_text and cell_text not in lines:
+                            lines.append(cell_text)
+            # Fallback: raw XML w:t extraction for content controls (SDT) and other structures
+            # that python-docx high-level API does not expose (e.g. DLIS/RICEFW templates)
+            if not lines:
+                log.info("No text via python-docx API — falling back to raw XML w:t extraction")
+                W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+                xml_parts = ["word/document.xml"]
+                try:
+                    with zipfile.ZipFile(io.BytesIO(content)) as z:
+                        names = z.namelist()
+                        xml_parts += [n for n in names if n.startswith("word/header") or n.startswith("word/footer")]
+                        for part in xml_parts:
+                            if part not in names:
+                                continue
+                            tree = etree.fromstring(z.read(part))
+                            for t in tree.iter(f"{{{W}}}t"):
+                                txt = (t.text or "").strip()
+                                if txt:
+                                    lines.append(txt)
+                except Exception as _xe:
+                    log.warning(f"XML fallback failed: {_xe}")
+            return "\n".join(lines)
 
         elif ext == "doc":
             log.info("Extracting doc (binary Word).")
