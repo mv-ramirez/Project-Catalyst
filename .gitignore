@@ -4,3 +4,12 @@ __pycache__/
 .venv/
 venv/
 .env
+
+# Runtime / tooling
+.agentflow/
+.claude/
+server.err
+server.out
+server2.err
+server2.out
+session_log.md
