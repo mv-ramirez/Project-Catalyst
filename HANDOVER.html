@@ -1,0 +1,414 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>SharePoint RAG API — Handover Guide</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { --fg:#1f2933; --muted:#616e7c; --line:#d9dee3; --accent:#0a6ed1; --bg:#f7f9fb; --code:#eef2f6; --warn:#fff4e5; --warnline:#e9730c; }
+  * { box-sizing:border-box; }
+  body { margin:0; font:15px/1.6 -apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; color:var(--fg); background:#fff; }
+  .layout { display:flex; max-width:1200px; margin:0 auto; }
+  nav { position:sticky; top:0; align-self:flex-start; width:260px; height:100vh; overflow:auto; padding:24px 16px; border-right:1px solid var(--line); background:var(--bg); flex-shrink:0; }
+  nav h2 { font-size:13px; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); margin:0 0 8px; }
+  nav a { display:block; padding:3px 0; color:var(--fg); text-decoration:none; font-size:14px; }
+  nav a:hover { color:var(--accent); }
+  main { padding:32px 40px 80px; min-width:0; }
+  h1 { font-size:28px; margin:0 0 4px; }
+  h2 { font-size:22px; margin:44px 0 12px; padding-top:12px; border-top:1px solid var(--line); }
+  h3 { font-size:17px; margin:26px 0 8px; }
+  p.sub { color:var(--muted); margin-top:0; }
+  code { background:var(--code); padding:1px 5px; border-radius:3px; font:13px Consolas,Menlo,monospace; }
+  pre { background:var(--code); padding:12px 14px; border-radius:6px; overflow:auto; font:13px/1.5 Consolas,Menlo,monospace; }
+  pre code { background:none; padding:0; }
+  table { border-collapse:collapse; width:100%; margin:12px 0 20px; font-size:14px; }
+  th, td { border:1px solid var(--line); padding:6px 10px; text-align:left; vertical-align:top; }
+  th { background:var(--bg); }
+  .note { background:var(--warn); border-left:4px solid var(--warnline); padding:10px 14px; border-radius:4px; margin:16px 0; }
+  .ok { background:#e8f5e9; border-left-color:#2e7d32; }
+  .tag { display:inline-block; padding:0 7px; border-radius:10px; font-size:12px; background:var(--code); color:var(--muted); }
+  @media (max-width:860px){ .layout{display:block} nav{position:static;width:auto;height:auto;border-right:0;border-bottom:1px solid var(--line)} main{padding:20px} }
+  @media print { nav{display:none} main{padding:0} h2{break-after:avoid} pre,table{break-inside:avoid} }
+</style>
+</head>
+<body>
+<div class="layout">
+<nav>
+  <h2>Contents</h2>
+  <a href="#overview">1. Overview</a>
+  <a href="#env">2. Environment &amp; access</a>
+  <a href="#arch">3. Architecture</a>
+  <a href="#code">4. Code walkthrough</a>
+  <a href="#pipeline">5. Vectorization pipeline</a>
+  <a href="#tables">6. HANA tables &amp; table sets</a>
+  <a href="#endpoints">7. Endpoint reference</a>
+  <a href="#mcp">8. MCP server</a>
+  <a href="#config">9. Configuration</a>
+  <a href="#deploy">10. Deploy &amp; operate</a>
+  <a href="#local">11. Local development</a>
+  <a href="#tests">12. Testing &amp; migration scripts</a>
+  <a href="#mydb">13. myDB side project</a>
+  <a href="#issues">14. Known issues &amp; open items</a>
+  <a href="#history">15. Recent history</a>
+</nav>
+<main>
+
+<h1>SharePoint RAG API — Handover Guide</h1>
+<p class="sub">Repo path: <code>cf8/push/</code> &nbsp;·&nbsp; Written 2026-10-23 from the repository code, <code>RAG_API_SPEC.md</code>, the live OpenAPI spec and <code>cf</code> output. Contains no secrets — only variable names and where to find them.</p>
+
+<div class="note"><strong>Read this first.</strong> The service is deployed and running on SAP BTP Cloud Foundry. Day to day it needs almost nothing. The things that can hurt you are: the destructive <code>/db/*</code> endpoints (guarded by <code>ENABLE_DESTRUCTIVE</code>), the table-set switches <code>BRAIN_READ_SET</code> / <code>BRAIN_WRITE_SET</code>, and the HDI container shared with the Node db module (see §6).</div>
+
+<h2 id="overview">1. Overview</h2>
+<p>A FastAPI service (<code>api.py</code>) that ingests documents from three sources — <strong>Microsoft SharePoint</strong> (MS Graph), <strong>SAP BTP Object Store (S3)</strong> and the local <strong>/tmp</strong> filesystem — extracts text, splits it into chunks, embeds each chunk with <code>BAAI/bge-small-en-v1.5</code> (384-dim) and stores everything in <strong>SAP HANA Cloud</strong>. It then serves semantic search (cosine similarity, with metadata filters) for RAG use, over REST and over an MCP server for Claude Desktop.</p>
+<p>The content is the "BTP-Brain" knowledge base: SAP delivery guidelines and deliverable templates, organised by layer, category and deliverable code.</p>
+
+<h2 id="env">2. Environment &amp; access</h2>
+<table>
+<tr><th>Item</th><th>Value</th></tr>
+<tr><td>CF API endpoint</td><td><code>https://api.cf.ap10.hana.ondemand.com</code></td></tr>
+<tr><td>CF org / space</td><td><code>atcp-sap-ai-delivery-workbench</code> / <code>SAP_AI_Workbench</code></td></tr>
+<tr><td>App name</td><td><code>sharepoint-rag-api</code></td></tr>
+<tr><td>URL</td><td><code>https://atcp-sap-ai-delivery-workbench-sap-ai-workbench-sharepo44c7e0a9.cfapps.ap10.hana.ondemand.com</code></td></tr>
+<tr><td>Swagger UI</td><td><code>/docs</code> (OpenAPI JSON at <code>/openapi.json</code>)</td></tr>
+<tr><td>Health</td><td><code>GET /health</code> — always public (CF health probe)</td></tr>
+<tr><td>SharePoint site</td><td><code>z0y8z.sharepoint.com</code> · <code>/sites/BTP-CatalystPlatform</code></td></tr>
+<tr><td>S/4HANA (ADT)</td><td><code>https://my407593.s4hana.cloud.sap</code>, client <code>080</code>, destination <code>BTP-Public-Cloud</code></td></tr>
+</table>
+
+<h3>Other apps in the same space</h3>
+<table>
+<tr><th>App</th><th>State (2026-10-23)</th><th>Notes</th></tr>
+<tr><td><code>sharepoint-rag-api</code></td><td>started</td><td>This project.</td></tr>
+<tr><td><code>btp-catalyst-platform-srv</code></td><td>started</td><td>The platform backend; shares the HANA HDI container.</td></tr>
+<tr><td><code>btp-cartridge-service</code></td><td>started</td><td>Separate service.</td></tr>
+<tr><td><code>btp-catalyst-platform-db-deployer</code></td><td>stopped</td><td>HDI deployer — starts only when deploying db artifacts.</td></tr>
+<tr><td><code>sharepoint-rag-db</code>, <code>sp-duplicate-checker</code></td><td>stopped</td><td>Not in use.</td></tr>
+</table>
+
+<h3>Bound services</h3>
+<table>
+<tr><th>Service instance</th><th>Purpose</th></tr>
+<tr><td><code>btp-catalyst-platform-db</code> (hana, hdi-shared)</td><td>HANA HDI container; credentials arrive via <code>VCAP_SERVICES</code>.</td></tr>
+<tr><td><code>btp-catalyst-platform-destination</code></td><td>Destination Service — supplies the MS Graph OAuth2 client credentials (destination <code>BTP-CP_MS_Graph</code>) and the S/4 destination.</td></tr>
+<tr><td><code>btp-catalyst-platform-objectstore</code></td><td>S3-compatible Object Store (listed in <code>manifest.yml</code>).</td></tr>
+</table>
+
+<h3>Getting access</h3>
+<ol>
+<li>Install the CF CLI, then <code>cf login -a https://api.cf.ap10.hana.ondemand.com</code> and choose the org/space above. You need Space Developer rights; ask the BTP subaccount admin.</li>
+<li>For API calls, send the key in the <code>X-API-Key</code> header. The key is the app's <code>API_SECRET_KEY</code> environment variable. Retrieve it with <code>cf env sharepoint-rag-api</code> (this prints secrets — do not paste the output anywhere). Hand it over via your team's password manager, not email.</li>
+<li>To rotate the key: <code>POST /admin/generate-key</code> returns a new random key. Set it with <code>cf set-env sharepoint-rag-api API_SECRET_KEY &lt;new&gt;</code> and put the old value in <code>API_SECRET_KEY_OLD</code> so existing clients keep working during the switch; then <code>cf restage</code>.</li>
+</ol>
+
+<h2 id="arch">3. Architecture</h2>
+<pre><code>SharePoint (MS Graph)  ─┐
+S3 / Object Store      ─┼─►  api.py ─► _extract_text()        docx xlsx pdf pptx …
+local /tmp             ─┘        │      _semantic_chunks()     paragraph packing, 512 "tokens"
+                                 │      SentenceTransformer     BAAI/bge-small-en-v1.5, 384-dim
+                                 ▼
+                              db.py ──► SAP HANA Cloud (BRAIN tables, REAL_VECTOR search)
+                                 │
+                              s3.py ──► run artifacts (HTML report, per-call log) → S3 runs/&lt;YYYYMMDD&gt;/
+                              s4.py ──► S/4HANA ADT (publish ABAP source)
+                       mcp_server.py ─► MCP over SSE for Claude Desktop</code></pre>
+<p>The runtime detects CF by the presence of <code>VCAP_SERVICES</code>. The container image holds no credentials; all three service bindings (HANA, Destination, Object Store) are injected at runtime.</p>
+
+<h3>Authentication &amp; token flow (MS Graph)</h3>
+<table>
+<tr><th>Environment</th><th>Steps</th></tr>
+<tr><td><strong>Cloud Foundry</strong></td><td>
+<ol>
+<li>Read the Destination Service binding from <code>VCAP_SERVICES</code> (<code>clientid</code>, <code>clientsecret</code>, <code>url</code>, <code>uri</code>).</li>
+<li><code>POST {url}/oauth/token</code> (client credentials) → XSUAA bearer token.</li>
+<li><code>GET {uri}/destination-configuration/v1/destinations/BTP-CP_MS_Graph</code> with that token.</li>
+<li>Take the first entry in <code>authTokens[]</code> with type bearer and a non-empty value as the MS Graph token.</li>
+<li><strong>Fallback:</strong> if no token is returned, call Azure AD directly using the destination's <code>tokenServiceURL</code>, <code>clientId</code> and <code>clientSecret</code>.</li>
+</ol></td></tr>
+<tr><td><strong>Local</strong></td><td><code>TENANT_ID</code> / <code>CLIENT_ID</code> / <code>CLIENT_SECRET</code> from <code>.env</code>; POST straight to <code>login.microsoftonline.com/{tenant}/oauth2/v2.0/token</code> with scope <code>https://graph.microsoft.com/.default</code>.</td></tr>
+</table>
+<p>The token is cached in a module-level variable behind a lock and refreshed 60 s before expiry, so no request waits on a token exchange. The same code path serves all environments.</p>
+
+<h3>Three ingest sources, one pipeline</h3>
+<table>
+<tr><th>Source</th><th><code>source</code> value</th><th><code>item_id</code> (primary key)</th><th>Read via</th></tr>
+<tr><td>SharePoint</td><td><code>sharepoint</code></td><td>MS Graph opaque item id</td><td>Graph <code>BaseURL</code> download link</td></tr>
+<tr><td>S3 / Object Store</td><td><code>s3</code></td><td>S3 ETag (falls back to the key)</td><td><code>s3.download_bytes(key)</code></td></tr>
+<tr><td>/tmp filesystem</td><td><code>tmp</code></td><td><code>md5(absolute path)</code> — stable across restarts</td><td><code>open(path, "rb")</code></td></tr>
+</table>
+<p>All three feed the same tables, so the query layer doesn't care where a chunk came from.</p>
+
+<h2 id="code">4. Code walkthrough</h2>
+<table>
+<tr><th>File</th><th>Lines</th><th>What it does</th></tr>
+<tr><td><code>api.py</code></td><td>~5,200</td><td>The FastAPI app and almost all logic: Graph auth and file listing, text extraction (<code>_extract_text</code>), chunking, embedding, the three vectorize pipelines (SharePoint / S3 / tmp), HTML run-report generation, storage and S3 routes, S/4 routes, auth and feature-flag dependencies, lifespan startup. Ends with <code>uvicorn.run</code> on <code>$PORT</code> (default 8000).</td></tr>
+<tr><td><code>db.py</code></td><td>~2,300</td><td>HANA access (<code>hdbcli</code>) plus the <code>/db/*</code> router. Table-set configuration, connection handling, <code>ingest*</code> upserts, cosine <code>query()</code>, <code>fetch_chunks()</code>, validated read-only SQL, backup-to-S3, backfill and retag, stats and analysis, destructive operations.</td></tr>
+<tr><td><code>s3.py</code></td><td>~530</td><td>boto3 wrapper over the Object Store. Credentials come from <code>VCAP_SERVICES</code>, then an <code>s3_creds.json</code> file, then <code>AWS_*</code> env vars. One shared client.</td></tr>
+<tr><td><code>s4.py</code></td><td>~280</td><td>S/4HANA ADT client. Publishes ABAP source from S3 to S/4. Auth order: <code>S4_USER</code>/<code>S4_PASSWORD</code>, then the Destination Service token for <code>BTP-Public-Cloud</code>, then credentials in the request body.</td></tr>
+<tr><td><code>mcp_server.py</code></td><td>~330</td><td>MCP server (SSE transport, <code>mcp&gt;=1.0,&lt;2.0</code>). See §8.</td></tr>
+<tr><td><code>migrate_brain_data.py</code></td><td>~250</td><td>CLI that copies rows legacy → HDI tables (<code>plan</code>, <code>copy</code>, <code>verify</code>). INSERT…SELECT only; no DDL or DROP.</td></tr>
+<tr><td><code>test_vectorize_s3.py</code></td><td>~440</td><td>CLI check of the ingest and retrieval path (<code>tables</code>, <code>roundtrip</code>, <code>vectorize</code>, <code>findings</code>).</td></tr>
+<tr><td><code>deliverables.json</code></td><td>19 rows</td><td>Deliverable rowId / short name / full name / phase (A1…F2). Used to turn a folder name into a <code>deliverable_code</code> tag. Mirrors a fixture in the platform UI — keep the two in step.</td></tr>
+<tr><td><code>manifest.yml</code>, <code>Procfile</code>, <code>runtime.txt</code>, <code>requirements.txt</code></td><td></td><td>CF deployment. Python 3.11, <code>cflinuxfs5</code> stack, CPU-only torch via the PyTorch extra index to keep staging disk small.</td></tr>
+<tr><td><code>RAG_API_SPEC.md</code></td><td>~750</td><td>Detailed technical spec (schemas, request/response models, pipeline detail). The best deep reference.</td></tr>
+<tr><td><code>catalyst-vectorization.html</code></td><td>~1,150</td><td>Standalone front-end page for the vectorization workflow.</td></tr>
+</table>
+
+<h3>Tag derivation from folder paths</h3>
+<p>Files carry tags used for filtered retrieval: <code>layer</code>, <code>layer_category</code>, <code>deliverable_code</code>, <code>client_name</code>, <code>project</code>, <code>source</code>. They are parsed from the path with the layout <code>&lt;BTP-Brain root&gt;/&lt;layer&gt;/&lt;Guidelines|Templates&gt;/&lt;deliverable&gt;[/&lt;client&gt;]/file</code>. The parsers are <code>_flatten_item()</code> (SharePoint) and <code>_parse_s3_tags()</code> (S3), which anchors on a root folder named <code>knowledge-base</code> or <code>btp-brain</code>. <code>deliverable_code</code> and <code>client_name</code> are set only for <em>Templates</em> folders. Folder names are typed by hand, so the deliverable is matched case-insensitively against the short name, the rowId or the full name.</p>
+
+<h2 id="pipeline">5. Vectorization pipeline</h2>
+<ol>
+<li><strong>Input.</strong> SharePoint items via Graph (download with 3 retries, back-off 5/15/30 s, 429 <code>Retry-After</code> honoured), S3 objects, or local /tmp paths.</li>
+<li><strong>Change detection.</strong> <code>_filter_stale_items()</code> compares SharePoint <code>lastModifiedDateTime</code> (truncated to seconds) with the value stored in the files table. Unchanged files are skipped; the response reports <code>skipped_unchanged</code>. If the DB map can't be read, everything is processed. Since 2026-10-07 the ingest also skips upserts for unchanged files, chunks and raw chunk records.</li>
+<li><strong>Extraction.</strong> <code>_extract_text()</code>: docx/dotx (python-docx, now including table cells with an XML <code>w:t</code> fallback), doc (olefile), xlsx/xlsm (openpyxl), xls (xlrd 1.2.0), pdf (pdfplumber), pptx/pptm (python-pptx), rtf, msg, csv, json, xml/html, zip (recursive), and plain-text types (txt, md, py, js, ts, sql, yaml, ini, toml, log, cfg, java, cs, abap).</li>
+<li><strong>Chunking.</strong> <code>_semantic_chunks(text, max_tokens=512)</code>: splits on newlines and packs paragraphs until about 2,048 characters (token ≈ 4 chars). No overlap.</li>
+<li><strong>Embedding.</strong> <code>BAAI/bge-small-en-v1.5</code>, normalised vectors, model cached under <code>SENTENCE_TRANSFORMERS_HOME</code> (<code>/tmp/models</code>). Loaded lazily on first use, so the first vectorize after a restart is slow.</li>
+<li><strong>Upsert.</strong> <code>db.ingest()</code>: files table, text chunks, vectors; plus raw base64 download chunks (<code>FILES_CHUNK</code>), the file registry and SharePoint version history. Tags are written when the tag columns exist.</li>
+<li><strong>Artifacts.</strong> An HTML run report and a per-call log are written under <code>DOWNLOAD_PATH/&lt;YYYYMMDD&gt;/</code> and uploaded to S3. View them at <code>/analysis</code> and <code>/analysis/latest</code>.</li>
+</ol>
+<p>With <code>use_delta=true</code> the first Graph call returns the whole drive, so items are filtered client-side by <code>parentReference.path</code> to avoid cross-folder contamination.</p>
+
+<h3>Pipeline detail</h3>
+<table>
+<tr><th>#</th><th>Step</th><th>Detail</th></tr>
+<tr><td>1</td><td>Fetch files</td><td>Graph <code>/drives/{drive_id}/root/delta</code> (or folder-scoped delta), following <code>@odata.nextLink</code> pages; each item is flattened to id, name, type, size, dates, web and download URLs.</td></tr>
+<tr><td>2</td><td>Fetch versions</td><td>Per file, <code>/drives/{id}/items/{id}/versions</code>, throttled (default 1 s between calls) to stay under Graph rate limits. Returns version id, size, modifier and download URL.</td></tr>
+<tr><td>3</td><td>Change detection</td><td>See below.</td></tr>
+<tr><td>4</td><td>Download</td><td>Streamed in 8 KB chunks, 300 s read timeout, 3 attempts, back-off 5 → 15 → 30 s, 429 <code>Retry-After</code> honoured.</td></tr>
+<tr><td>5</td><td>Extract text</td><td>By extension (table in the step list above).</td></tr>
+<tr><td>6</td><td>Chunk</td><td>Newline-split paragraphs packed to ~2,048 characters; no overlap.</td></tr>
+<tr><td>7</td><td>Embed</td><td>bge-small-en-v1.5, 384-dim, normalised; lazy-loaded and cached in <code>/tmp/models</code>.</td></tr>
+<tr><td>8</td><td>HANA upsert</td><td><code>UPSERT … WITH PRIMARY KEY</code> into the files, text-chunk and vector tables (vectors via <code>TO_REAL_VECTOR()</code>), plus raw chunks, registry and versions.</td></tr>
+<tr><td>9</td><td>Write outputs</td><td>Records appended one at a time to JSONL files under <code>DOWNLOAD_PATH</code>.</td></tr>
+<tr><td>10</td><td>Report &amp; upload</td><td>HTML run report and call log uploaded to S3 <code>runs/YYYYMMDD/</code>; an upload failure is a warning, not a run failure.</td></tr>
+</table>
+<p><strong>Memory strategy.</strong> Only running counts are kept across the file loop. File bytes are freed after extraction, extracted text after chunking, and per-file chunk and vector lists after the upsert. This is what lets a large library fit in the 1,536 MB container.</p>
+
+<h3>Change-detection outcomes</h3>
+<p><code>db.get_modified_map()</code> makes one query for every known <code>item_id</code> → stored <code>last_modified</code>. <code>_filter_stale_items()</code> truncates both timestamps to seconds before comparing:</p>
+<table>
+<tr><th>Case</th><th>Condition</th><th>Result</th></tr>
+<tr><td>Unchanged</td><td>Timestamps equal</td><td>Skipped, counted in <code>skipped_unchanged</code>; no further I/O.</td></tr>
+<tr><td>New</td><td><code>item_id</code> not in the map</td><td>Full download → extract → chunk → embed → upsert.</td></tr>
+<tr><td>Modified</td><td>Timestamps differ</td><td>Re-vectorized; existing rows overwritten through the primary-key upsert.</td></tr>
+<tr><td>DB unreachable</td><td><code>get_modified_map()</code> raises</td><td>Everything is processed. Deliberate: re-doing work is safer than silently skipping.</td></tr>
+</table>
+<p>The filter reads the files table's <code>last_modified</code> column, not <code>FILE_REGISTRY</code>. /tmp files are stored in the same files table with <code>source='tmp'</code>.</p>
+
+<h3>Output files (written to <code>DOWNLOAD_PATH/&lt;YYYYMMDD&gt;/</code>)</h3>
+<table>
+<tr><th>Source</th><th>Files</th></tr>
+<tr><td>SharePoint (<code>sp_*</code>)</td><td><code>sp_chunks_&lt;ts&gt;.jsonl</code> (item_id, chunk_id, chunk_data, filename) · <code>sp_vectors_&lt;ts&gt;.jsonl</code> (… vector_data) · <code>sp_files_chunk_&lt;ts&gt;.jsonl</code> (raw base64 8 KB blocks, used by <code>/rebuild</code> to reassemble a file without calling SharePoint) · <code>sp_root_data_&lt;ts&gt;.json</code> · <code>sp_files_versions_&lt;ts&gt;.json</code> · <code>sp_analysis_&lt;ts&gt;.html</code></td></tr>
+<tr><td>S3 (<code>s3_*</code>)</td><td><code>s3_chunks_&lt;ts&gt;.jsonl</code> · <code>s3_vectors_&lt;ts&gt;.jsonl</code> · <code>s3_files_chunks_&lt;ts&gt;.json</code> · <code>s3_root_data_&lt;ts&gt;.json</code> (key, size, etag, storage class)</td></tr>
+<tr><td>/tmp (<code>tmp_*</code>)</td><td><code>tmp_chunks_&lt;ts&gt;.jsonl</code> · <code>tmp_vectors_&lt;ts&gt;.jsonl</code> · <code>tmp_files_chunks_&lt;ts&gt;.json</code> · <code>tmp_root_data_&lt;ts&gt;.json</code> (path, mtime, size)</td></tr>
+<tr><td>All runs</td><td><code>&lt;endpoint&gt;_&lt;ts&gt;.log</code> per call; viewable at <code>/analysis/{day}/{file}</code></td></tr>
+</table>
+
+<h2 id="tables">6. HANA tables &amp; table sets</h2>
+<p>Two physical sets of the same seven tables exist because of the HDI migration:</p>
+<table>
+<tr><th>Key</th><th>Legacy (<code>CATALYSTPLATFORM_BRAIN_*</code>)</th><th>HDI (<code>CATALYSTPLATFORM_TB_BRAIN_*</code>)</th></tr>
+<tr><td>sp_files</td><td>…_BRAIN_SP_FILES</td><td>…_TB_BRAIN_SP_FILES</td></tr>
+<tr><td>s3_files</td><td>…_BRAIN_S3_FILES</td><td>…_TB_BRAIN_S3_FILES</td></tr>
+<tr><td>text_chunks</td><td>…_BRAIN_TEXT_CHUNKS</td><td>…_TB_BRAIN_TEXT_CHUNKS</td></tr>
+<tr><td>vectors</td><td>…_BRAIN_VECTORS</td><td>…_TB_BRAIN_VECTORS</td></tr>
+<tr><td>files_chunk</td><td>…_BRAIN_FILES_CHUNK</td><td>…_TB_BRAIN_FILES_CHUNK</td></tr>
+<tr><td>file_registry</td><td>…_BRAIN_FILE_REGISTRY</td><td>…_TB_BRAIN_FILE_REGISTRY</td></tr>
+<tr><td>sp_versions</td><td>…_BRAIN_SP_FILES_VERSIONS</td><td>…_TB_BRAIN_SP_FILES_VERSIONS</td></tr>
+</table>
+<ul>
+<li><strong>Current production setting:</strong> <code>BRAIN_READ_SET=hdi</code>, <code>BRAIN_WRITE_SET=hdi</code> (from <code>manifest.yml</code>). The code default is <code>legacy</code> for both.</li>
+<li><code>BRAIN_WRITE_SET=both</code> dual-writes: the READ set is primary (a failure raises); the other set is best-effort (failure logged and returned under <code>errors</code>). Use <code>GET /db/tables</code> to compare counts before flipping the read set.</li>
+<li>The HDI tables are owned by the Node db module in the <code>BTP-Catalyst-Platform</code> repo (<code>db/src/*.hdbmigrationtable</code>). <strong>Python never issues DDL against them.</strong> <code>create_tables</code>, <code>migrate_tables</code> and <code>drop_tables</code> refuse to run when HDI is active; a past incident (Sep 10) where Python created objects in a container HDI also owns caused data loss.</li>
+<li>Renaming an HDI table is a two-repo change: the <code>.hdbmigrationtable</code> file and the constant in <code>db.py</code> must move in the same commit. Always use the constants, never inline a table name.</li>
+<li>Vectors are 384-dim. Retrieval filters are applied <em>before</em> cosine ranking, so <code>top_k</code> counts only matching rows.</li>
+</ul>
+
+<h3>Table purposes</h3>
+<table>
+<tr><th>Table</th><th>Key</th><th>Holds</th></tr>
+<tr><td>SP_FILES</td><td><code>item_id</code></td><td>One row per file (all sources): name, type, size, URLs, last_modified, version count, <code>source</code>, tags (layer, layer_category, deliverable_code, …). Change detection reads this.</td></tr>
+<tr><td>S3_FILES</td><td><code>item_id</code></td><td>S3 object registry: key, ETag, storage class, timestamps.</td></tr>
+<tr><td>TEXT_CHUNKS</td><td><code>item_id</code>, <code>chunk_id</code></td><td>Raw chunk text (NCLOB), fetched after a vector hit.</td></tr>
+<tr><td>VECTORS</td><td><code>item_id</code>, <code>chunk_id</code></td><td><code>REAL_VECTOR(384)</code>, searched with <code>COSINE_SIMILARITY(vector_data, TO_REAL_VECTOR(?))</code> inside HANA — no external vector store.</td></tr>
+<tr><td>FILES_CHUNK</td><td>per file / chunk</td><td>Raw base64 download chunks for <code>/rebuild</code>. The largest table (~10.9 KB per row).</td></tr>
+<tr><td>FILE_REGISTRY</td><td><code>item_id</code>, <code>source</code></td><td>Lightweight cross-source record (filename, modified time), written best-effort after ingest. Not what the change filter reads.</td></tr>
+<tr><td>SP_FILES_VERSIONS</td><td><code>item_id</code>, <code>version_id</code></td><td>SharePoint version history with size, modifier and download URL.</td></tr>
+</table>
+<p><strong>Vector wire format.</strong> <code>hdbcli</code> returns a vector column as a binary blob: <code>[uint16 dims LE][uint16 pad][float32 × 384 LE]</code> = 1,540 bytes. <code>/db/vectors/{item_id}</code> decodes it to plain floats. Per the original diagram notes, stored vectors matched locally recomputed embeddings (cosine 1.0).</p>
+<p><strong>Query flow (<code>POST /db/query</code>).</strong> text → encode to a 384-dim vector → <code>COSINE_SIMILARITY</code> join over the filtered candidates → top K → <code>{item_id, filename, chunk_id, chunk_data, score}</code>.</p>
+<p><strong>SharePoint path → tags</strong> (<code>_flatten_item()</code>): the folder path is split on <code>/</code>; index 2 = layer, 3 = layer_category, 4 = deliverable segment (matched against <code>deliverables.json</code>), 5 = client name (Templates only). Example: <code>/BTP-Brain/Layer3/Templates/FDD/ClientX/…</code>. The deliverables file has 19 entries across the phases discover, prepare, explore, realize, deploy and run.</p>
+
+<h2 id="endpoints">7. Endpoint reference</h2>
+<p>All routes require <code>X-API-Key</code> except <code>/health</code>. If <code>API_SECRET_KEY</code> is unset, auth is <strong>off</strong>. CORS allows all origins. Each route below links to its entry in the live Swagger UI (<code>/docs</code>), where you can see the full schema and try it with your key. The two <code>/admin</code> routes are hidden from the docs, so they are not linked.</p>
+
+<h3>system / debug <span class="tag">ENABLE_DEBUG for debug routes</span></h3>
+<table>
+<tr><th>Route</th><th>Purpose</th></tr>
+<tr><td><a href="https://atcp-sap-ai-delivery-workbench-sap-ai-workbench-sharepo44c7e0a9.cfapps.ap10.hana.ondemand.com/docs#/system/health_health_get" target="_blank" rel="noopener"><code>GET /health</code></a></td><td>App health and whether the SharePoint connection was established at startup.</td></tr>
+<tr><td><a href="https://atcp-sap-ai-delivery-workbench-sap-ai-workbench-sharepo44c7e0a9.cfapps.ap10.hana.ondemand.com/docs#/system/debug_destination_debug_destination_get" target="_blank" rel="noopener"><code>GET /debug/destination</code></a><br><a href="https://atcp-sap-ai-delivery-workbench-sap-ai-workbench-sharepo44c7e0a9.cfapps.ap10.hana.ondemand.com/docs#/system/debug_db_debug_db_get" target="_blank" rel="noopener"><code>GET /debug/db</code></a><br><a href="https://atcp-sap-ai-delivery-workbench-sap-ai-workbench-sharepo44c7e0a9.cfapps.ap10.hana.ondemand.com/docs#/system/debug_s3_debug_s3_get" target="_blank" rel="noopener"><code>GET /debug/s3</code></a></td><td>Diagnose BTP Destination, HANA and S3 connectivity.</td></tr>
+<tr><td><a href="https://atcp-sap-ai-delivery-workbench-sap-ai-workbench-sharepo44c7e0a9.cfapps.ap10.hana.ondemand.com/docs#/system/debug_tmp_debug_tmp_get" target="_blank" rel="noopener"><code>GET /debug/tmp</code></a><br><a href="https://atcp-sap-ai-delivery-workbench-sap-ai-workbench-sharepo44c7e0a9.cfapps.ap10.hana.ondemand.com/docs#/system/debug_tmp_preview_debug_tmp_preview_get" target="_blank" rel="noopener"><code>GET /debug/tmp/preview</code></a></td><td>Browse and preview the /tmp filesystem.</td></tr>
+</table>
+
+<h3>files (SharePoint)</h3>
+<table>
+<tr><th>Route</th><th>Purpose</th></tr>
+<tr><td><a href="https://atcp-sap-ai-delivery-workbench-sap-ai-workbench-sharepo44c7e0a9.cfapps.ap10.hana.ondemand.com/docs#/files/list_files_files_get" target="_blank" rel="noopener"><code>GET /files</code></a></td><td>List root files and sync metadata to HANA.</td></tr>
+<tr><td><a href="https://atcp-sap-ai-delivery-workbench-sap-ai-workbench-sharepo44c7e0a9.cfapps.ap10.hana.ondemand.com/docs#/files/list_files_with_versions_files_versions_get" target="_blank" rel="noopener"><code>GET /files/versions</code></a></td><td>Root files with full version history.</td></tr>
+<tr><td><a href="https://atcp-sap-ai-delivery-workbench-sap-ai-workbench-sharepo44c7e0a9.cfapps.ap10.hana.ondemand.com/docs#/files/list_all_files_files_all_get" target="_blank" rel="noopener"><code>GET /files/all</code></a></td><td>Files under a folder path (or root).</td></tr>
+<tr><td><a href="https://atcp-sap-ai-delivery-workbench-sap-ai-workbench-sharepo44c7e0a9.cfapps.ap10.hana.ondemand.com/docs#/files/search_files_files_search_get" target="_blank" rel="noopener"><code>GET /files/search</code></a></td><td>Search by filename.</td></tr>
+<tr><td><a href="https://atcp-sap-ai-delivery-workbench-sap-ai-workbench-sharepo44c7e0a9.cfapps.ap10.hana.ondemand.com/docs#/files/get_file_hash_files_hash__item_id__get" target="_blank" rel="noopener"><code>GET /files/hash/{item_id}</code></a></td><td>File hash by item id.</td></tr>
+<tr><td><a href="https://atcp-sap-ai-delivery-workbench-sap-ai-workbench-sharepo44c7e0a9.cfapps.ap10.hana.ondemand.com/docs#/files/download_file_download_post" target="_blank" rel="noopener"><code>POST /download</code></a></td><td>Download a SharePoint file and stream it back.</td></tr>
+<tr><td><a href="https://atcp-sap-ai-delivery-workbench-sap-ai-workbench-sharepo44c7e0a9.cfapps.ap10.hana.ondemand.com/docs#/files/rebuild_file_get_rebuild_get" target="_blank" rel="noopener"><code>GET /rebuild</code></a><br><a href="https://atcp-sap-ai-delivery-workbench-sap-ai-workbench-sharepo44c7e0a9.cfapps.ap10.hana.ondemand.com/docs#/files/rebuild_file_rebuild_post" target="_blank" rel="noopener"><code>POST /rebuild</code></a></td><td>Rebuild a file from stored raw chunks.</td></tr>
+</table>
+
+<h3>rag (vectorize)</h3>
+<table>
+<tr><th>Route</th><th>Source</th></tr>
+<tr><td><a href="https://atcp-sap-ai-delivery-workbench-sap-ai-workbench-sharepo44c7e0a9.cfapps.ap10.hana.ondemand.com/docs#/rag/get_vectorize_vectorize_get" target="_blank" rel="noopener"><code>GET /vectorize</code></a></td><td>All SharePoint root files.</td></tr>
+<tr><td><a href="https://atcp-sap-ai-delivery-workbench-sap-ai-workbench-sharepo44c7e0a9.cfapps.ap10.hana.ondemand.com/docs#/rag/vectorize_vectorize_post" target="_blank" rel="noopener"><code>POST /vectorize</code></a></td><td>Explicit list of SharePoint items.</td></tr>
+<tr><td><a href="https://atcp-sap-ai-delivery-workbench-sap-ai-workbench-sharepo44c7e0a9.cfapps.ap10.hana.ondemand.com/docs#/rag/vectorize_folder_vectorize_folder__folder_path__get" target="_blank" rel="noopener"><code>GET /vectorize/folder/{folder_path}</code></a></td><td>SharePoint sub-folder.</td></tr>
+<tr><td><a href="https://atcp-sap-ai-delivery-workbench-sap-ai-workbench-sharepo44c7e0a9.cfapps.ap10.hana.ondemand.com/docs#/rag/vectorize_single_item_vectorize_item_post" target="_blank" rel="noopener"><code>POST /vectorize/item</code></a></td><td>One SharePoint item.</td></tr>
+<tr><td><a href="https://atcp-sap-ai-delivery-workbench-sap-ai-workbench-sharepo44c7e0a9.cfapps.ap10.hana.ondemand.com/docs#/rag/pipeline_pipeline_post" target="_blank" rel="noopener"><code>POST /pipeline</code></a></td><td>Root files with versions → vectorize → save all outputs.</td></tr>
+<tr><td><a href="https://atcp-sap-ai-delivery-workbench-sap-ai-workbench-sharepo44c7e0a9.cfapps.ap10.hana.ondemand.com/docs#/rag/vectorize_s3_vectorize_s3_post" target="_blank" rel="noopener"><code>POST /vectorize/s3</code></a><br><a href="https://atcp-sap-ai-delivery-workbench-sap-ai-workbench-sharepo44c7e0a9.cfapps.ap10.hana.ondemand.com/docs#/rag/vectorize_s3_item_vectorize_s3_item_post" target="_blank" rel="noopener"><code>POST /vectorize/s3/item</code></a></td><td>S3 prefix / single key.</td></tr>
+<tr><td><a href="https://atcp-sap-ai-delivery-workbench-sap-ai-workbench-sharepo44c7e0a9.cfapps.ap10.hana.ondemand.com/docs#/rag/vectorize_s3_folder_vectorize_s3_folder__folder_path__get" target="_blank" rel="noopener"><code>GET /vectorize/s3/folder/{folder_path}</code></a><br><a href="https://atcp-sap-ai-delivery-workbench-sap-ai-workbench-sharepo44c7e0a9.cfapps.ap10.hana.ondemand.com/docs#/rag/vectorize_s3_folder_download_vectorize_s3_folder__folder_path__download_get" target="_blank" rel="noopener"><code>GET /vectorize/s3/folder/{folder_path}/download</code></a></td><td>S3 folder; <code>/download</code> returns a zip with no HANA ingest.</td></tr>
+<tr><td><a href="https://atcp-sap-ai-delivery-workbench-sap-ai-workbench-sharepo44c7e0a9.cfapps.ap10.hana.ondemand.com/docs#/rag/vectorize_tmp_vectorize_tmp_post" target="_blank" rel="noopener"><code>POST /vectorize/tmp</code></a><br><a href="https://atcp-sap-ai-delivery-workbench-sap-ai-workbench-sharepo44c7e0a9.cfapps.ap10.hana.ondemand.com/docs#/rag/vectorize_tmp_item_vectorize_tmp_item_post" target="_blank" rel="noopener"><code>POST /vectorize/tmp/item</code></a><br><a href="https://atcp-sap-ai-delivery-workbench-sap-ai-workbench-sharepo44c7e0a9.cfapps.ap10.hana.ondemand.com/docs#/rag/vectorize_tmp_folder_vectorize_tmp__folder_path__get" target="_blank" rel="noopener"><code>GET /vectorize/tmp/{folder_path}</code></a></td><td>Local /tmp folder / file.</td></tr>
+</table>
+
+<h3>database (<code>/db</code>)</h3>
+<table>
+<tr><th>Route</th><th>Purpose</th></tr>
+<tr><td><a href="https://atcp-sap-ai-delivery-workbench-sap-ai-workbench-sharepo44c7e0a9.cfapps.ap10.hana.ondemand.com/docs#/database/db_query_db_query_post" target="_blank" rel="noopener"><code>POST /db/query</code></a></td><td>Semantic search: <code>text</code>, <code>top_k</code> (1–200), optional <code>layer</code>, <code>layer_category</code>, <code>deliverable_code</code>, <code>project</code>, <code>source</code> (each a value or list) and <code>min_score</code>.</td></tr>
+<tr><td><a href="https://atcp-sap-ai-delivery-workbench-sap-ai-workbench-sharepo44c7e0a9.cfapps.ap10.hana.ondemand.com/docs#/database/db_fetch_chunks_db_chunks_post" target="_blank" rel="noopener"><code>POST /db/chunks</code></a></td><td>Fetch chunks by tag in document order, no ranking.</td></tr>
+<tr><td><a href="https://atcp-sap-ai-delivery-workbench-sap-ai-workbench-sharepo44c7e0a9.cfapps.ap10.hana.ondemand.com/docs#/database/db_sql_db_sql_post" target="_blank" rel="noopener"><code>POST /db/sql</code></a></td><td>Run a validated SELECT. Rejects non-SELECT, comments, semicolons and DML/DDL keywords; pass values via params.</td></tr>
+<tr><td><a href="https://atcp-sap-ai-delivery-workbench-sap-ai-workbench-sharepo44c7e0a9.cfapps.ap10.hana.ondemand.com/docs#/database/db_files_db_files_get" target="_blank" rel="noopener"><code>GET /db/files</code></a><br><a href="https://atcp-sap-ai-delivery-workbench-sap-ai-workbench-sharepo44c7e0a9.cfapps.ap10.hana.ondemand.com/docs#/database/db_file_registry_db_file_registry_get" target="_blank" rel="noopener"><code>GET /db/file-registry</code></a><br><a href="https://atcp-sap-ai-delivery-workbench-sap-ai-workbench-sharepo44c7e0a9.cfapps.ap10.hana.ondemand.com/docs#/database/db_chunks_db_chunks__item_id__get" target="_blank" rel="noopener"><code>GET /db/chunks/{item_id}</code></a><br><a href="https://atcp-sap-ai-delivery-workbench-sap-ai-workbench-sharepo44c7e0a9.cfapps.ap10.hana.ondemand.com/docs#/database/db_vectors_db_vectors__item_id__get" target="_blank" rel="noopener"><code>GET /db/vectors/{item_id}</code></a><br><a href="https://atcp-sap-ai-delivery-workbench-sap-ai-workbench-sharepo44c7e0a9.cfapps.ap10.hana.ondemand.com/docs#/database/db_tables_db_tables_get" target="_blank" rel="noopener"><code>GET /db/tables</code></a></td><td>Inspection. <code>/db/tables</code> shows which set is active and row counts.</td></tr>
+<tr><td><a href="https://atcp-sap-ai-delivery-workbench-sap-ai-workbench-sharepo44c7e0a9.cfapps.ap10.hana.ondemand.com/docs#/database/db_backup_db_backup_post" target="_blank" rel="noopener"><code>POST /db/backup</code></a></td><td>Back up all BRAIN tables to S3.</td></tr>
+<tr><td><a href="https://atcp-sap-ai-delivery-workbench-sap-ai-workbench-sharepo44c7e0a9.cfapps.ap10.hana.ondemand.com/docs#/database/db_backfill_db_backfill_post" target="_blank" rel="noopener"><code>POST /db/backfill</code></a></td><td>Copy legacy rows into the HDI tables (idempotent).</td></tr>
+<tr><td><a href="https://atcp-sap-ai-delivery-workbench-sap-ai-workbench-sharepo44c7e0a9.cfapps.ap10.hana.ondemand.com/docs#/database/db_retag_db_retag_post" target="_blank" rel="noopener"><code>POST /db/retag</code></a></td><td>Update tag columns on existing records.</td></tr>
+<tr><td><a href="https://atcp-sap-ai-delivery-workbench-sap-ai-workbench-sharepo44c7e0a9.cfapps.ap10.hana.ondemand.com/docs#/database/db_init_db_init_post" target="_blank" rel="noopener"><code>POST /db/init</code></a><br><a href="https://atcp-sap-ai-delivery-workbench-sap-ai-workbench-sharepo44c7e0a9.cfapps.ap10.hana.ondemand.com/docs#/database/db_migrate_db_migrate_post" target="_blank" rel="noopener"><code>POST /db/migrate</code></a></td><td>Legacy-set DDL only; refused when HDI is active.</td></tr>
+<tr><td><a href="https://atcp-sap-ai-delivery-workbench-sap-ai-workbench-sharepo44c7e0a9.cfapps.ap10.hana.ondemand.com/docs#/database/db_delete_db_item__item_id__delete" target="_blank" rel="noopener"><code>DELETE /db/item/{item_id}</code></a><br><a href="https://atcp-sap-ai-delivery-workbench-sap-ai-workbench-sharepo44c7e0a9.cfapps.ap10.hana.ondemand.com/docs#/database/db_drop_db_drop_post" target="_blank" rel="noopener"><code>POST /db/drop</code></a><br><a href="https://atcp-sap-ai-delivery-workbench-sap-ai-workbench-sharepo44c7e0a9.cfapps.ap10.hana.ondemand.com/docs#/database/db_truncate_db_truncate_post" target="_blank" rel="noopener"><code>POST /db/truncate</code></a></td><td><strong>Destructive</strong> — return 403 unless <code>ENABLE_DESTRUCTIVE=true</code>. <code>drop</code>/<code>truncate</code> also need <code>confirm=true</code>.</td></tr>
+</table>
+
+<h3>analysis, storage, s3, s4, admin</h3>
+<table>
+<tr><th>Route</th><th>Purpose</th></tr>
+<tr><td><a href="https://atcp-sap-ai-delivery-workbench-sap-ai-workbench-sharepo44c7e0a9.cfapps.ap10.hana.ondemand.com/docs#/analysis/list_analysis_analysis_get" target="_blank" rel="noopener"><code>GET /analysis</code></a><br><a href="https://atcp-sap-ai-delivery-workbench-sap-ai-workbench-sharepo44c7e0a9.cfapps.ap10.hana.ondemand.com/docs#/analysis/analysis_latest_analysis_latest_get" target="_blank" rel="noopener"><code>GET /analysis/latest</code></a><br><a href="https://atcp-sap-ai-delivery-workbench-sap-ai-workbench-sharepo44c7e0a9.cfapps.ap10.hana.ondemand.com/docs#/analysis/analysis_db_analysis_db_get" target="_blank" rel="noopener"><code>GET /analysis/db</code></a><br><a href="https://atcp-sap-ai-delivery-workbench-sap-ai-workbench-sharepo44c7e0a9.cfapps.ap10.hana.ondemand.com/docs#/analysis/analysis_by_name_analysis__day___filename__get" target="_blank" rel="noopener"><code>GET /analysis/{day}/{filename}</code></a></td><td>Run reports, logs and a live DB metrics dashboard.</td></tr>
+<tr><td><a href="https://atcp-sap-ai-delivery-workbench-sap-ai-workbench-sharepo44c7e0a9.cfapps.ap10.hana.ondemand.com/docs#/storage/storage_list_storage_get" target="_blank" rel="noopener"><code>GET /storage</code></a><br><a href="https://atcp-sap-ai-delivery-workbench-sap-ai-workbench-sharepo44c7e0a9.cfapps.ap10.hana.ondemand.com/docs#/storage/storage_browse_folder_storage__day__get" target="_blank" rel="noopener"><code>GET /storage/{day}</code></a><br><a href="https://atcp-sap-ai-delivery-workbench-sap-ai-workbench-sharepo44c7e0a9.cfapps.ap10.hana.ondemand.com/docs#/storage/storage_download_storage__day___filename__get" target="_blank" rel="noopener"><code>GET /storage/{day}/{filename}</code></a><br><a href="https://atcp-sap-ai-delivery-workbench-sap-ai-workbench-sharepo44c7e0a9.cfapps.ap10.hana.ondemand.com/docs#/storage/storage_delete_folder_storage__day__delete" target="_blank" rel="noopener"><code>DELETE /storage/{day}</code></a><br><a href="https://atcp-sap-ai-delivery-workbench-sap-ai-workbench-sharepo44c7e0a9.cfapps.ap10.hana.ondemand.com/docs#/storage/storage_delete_storage__day___filename__delete" target="_blank" rel="noopener"><code>DELETE /storage/{day}/{filename}</code></a></td><td>Browse, download and delete local output files.</td></tr>
+<tr><td><a href="https://atcp-sap-ai-delivery-workbench-sap-ai-workbench-sharepo44c7e0a9.cfapps.ap10.hana.ondemand.com/docs#/s3/s3_list_objects_s3_objects_get" target="_blank" rel="noopener"><code>GET /s3/objects</code></a><br><a href="https://atcp-sap-ai-delivery-workbench-sap-ai-workbench-sharepo44c7e0a9.cfapps.ap10.hana.ondemand.com/docs#/s3/s3_bulk_delete_s3_objects_delete" target="_blank" rel="noopener"><code>DELETE /s3/objects</code></a><br><a href="https://atcp-sap-ai-delivery-workbench-sap-ai-workbench-sharepo44c7e0a9.cfapps.ap10.hana.ondemand.com/docs#/s3/s3_download_object_s3_object__s3_key__get" target="_blank" rel="noopener"><code>GET /s3/object/{s3_key}</code></a><br><a href="https://atcp-sap-ai-delivery-workbench-sap-ai-workbench-sharepo44c7e0a9.cfapps.ap10.hana.ondemand.com/docs#/s3/s3_delete_object_s3_object__s3_key__delete" target="_blank" rel="noopener"><code>DELETE /s3/object/{s3_key}</code></a><br><a href="https://atcp-sap-ai-delivery-workbench-sap-ai-workbench-sharepo44c7e0a9.cfapps.ap10.hana.ondemand.com/docs#/s3/s3_object_metadata_s3_object__s3_key__metadata_get" target="_blank" rel="noopener"><code>GET /s3/object/{s3_key}/metadata</code></a><br><a href="https://atcp-sap-ai-delivery-workbench-sap-ai-workbench-sharepo44c7e0a9.cfapps.ap10.hana.ondemand.com/docs#/s3/s3_presigned_download_s3_presigned__s3_key__get" target="_blank" rel="noopener"><code>GET /s3/presigned/{s3_key}</code></a><br><a href="https://atcp-sap-ai-delivery-workbench-sap-ai-workbench-sharepo44c7e0a9.cfapps.ap10.hana.ondemand.com/docs#/s3/s3_presigned_upload_url_s3_presigned_upload_post" target="_blank" rel="noopener"><code>POST /s3/presigned-upload</code></a><br><a href="https://atcp-sap-ai-delivery-workbench-sap-ai-workbench-sharepo44c7e0a9.cfapps.ap10.hana.ondemand.com/docs#/s3/s3_upload_storage_file_s3_upload_storage_file_post" target="_blank" rel="noopener"><code>POST /s3/upload-storage-file</code></a><br><a href="https://atcp-sap-ai-delivery-workbench-sap-ai-workbench-sharepo44c7e0a9.cfapps.ap10.hana.ondemand.com/docs#/s3/s3_upload_storage_folder_s3_upload_storage_folder__day__post" target="_blank" rel="noopener"><code>POST /s3/upload-storage-folder/{day}</code></a></td><td>Object Store management.</td></tr>
+<tr><td><a href="https://atcp-sap-ai-delivery-workbench-sap-ai-workbench-sharepo44c7e0a9.cfapps.ap10.hana.ondemand.com/docs#/s4/s4_publish_abap_s4_publish_abap_post" target="_blank" rel="noopener"><code>POST /s4/publish-abap</code></a><br><a href="https://atcp-sap-ai-delivery-workbench-sap-ai-workbench-sharepo44c7e0a9.cfapps.ap10.hana.ondemand.com/docs#/s4/s4_test_connection_s4_test_connection_get" target="_blank" rel="noopener"><code>GET /s4/test-connection</code></a></td><td>Publish ABAP source to S/4 via ADT; test connectivity.</td></tr>
+<tr><td>POST /admin/generate-key<br>GET /admin/export/{table}</td><td>Hidden from docs. The export is paginated JSON (<code>offset</code>, <code>limit</code> ≤ 2000) of the six HDI tables, excluding vectors; used for the myDB migration.</td></tr>
+</table>
+
+<h2 id="mcp">8. MCP server</h2>
+<p><code>mcp_server.py</code> exposes the API to Claude Desktop over SSE: <code>GET /mcp/sse</code> and <code>POST /mcp/messages/</code> (hidden from <code>/docs</code>, covered by the global API-key check). Tools: <code>search_documents</code>, <code>list_indexed_files</code>, <code>get_db_stats</code>, <code>list_s3_objects</code>, <code>get_s3_presigned_url</code>, <code>publish_abap</code>, <code>test_s4_connection</code>, <code>list_sharepoint_files</code>, <code>search_sharepoint_files</code>, <code>run_pipeline</code>. The package is pinned to <code>mcp&lt;2</code>; the v2 FastMCP API was tried and reverted (commit history, Sep 30).</p>
+
+<h2 id="config">9. Configuration</h2>
+<h3>Set in <code>manifest.yml</code></h3>
+<table>
+<tr><th>Variable</th><th>Value / meaning</th></tr>
+<tr><td><code>BRAIN_READ_SET</code> / <code>BRAIN_WRITE_SET</code></td><td><code>hdi</code> / <code>hdi</code>. See §6.</td></tr>
+<tr><td><code>ENABLE_DESTRUCTIVE</code></td><td><code>false</code>. Enables delete, drop, truncate.</td></tr>
+<tr><td><code>ENABLE_DEBUG</code></td><td><code>false</code>. Enables <code>/debug/*</code>.</td></tr>
+<tr><td><code>HOSTNAME</code>, <code>SITE_PATH</code></td><td>SharePoint tenant host and site.</td></tr>
+<tr><td><code>DOWNLOAD_PATH</code></td><td><code>/tmp</code> — ephemeral on CF; lost on restart. Run artifacts are copied to S3 for that reason.</td></tr>
+<tr><td><code>SENTENCE_TRANSFORMERS_HOME</code></td><td><code>/tmp/models</code> — embedding model cache.</td></tr>
+<tr><td><code>S4_BASE_URL</code>, <code>S4_CLIENT</code>, <code>S4_DESTINATION</code></td><td>S/4HANA ADT target.</td></tr>
+</table>
+<h3>Set outside the manifest (names only)</h3>
+<table>
+<tr><th>Variable</th><th>Where</th></tr>
+<tr><td><code>API_SECRET_KEY</code>, <code>API_SECRET_KEY_OLD</code></td><td><code>cf set-env</code>. Client API key and the previous key during rotation.</td></tr>
+<tr><td><code>S4_USER</code>, <code>S4_PASSWORD</code></td><td>Optional communication user for ADT basic auth (commented out in the manifest).</td></tr>
+<tr><td><code>TENANT_ID</code>, <code>CLIENT_ID</code>, <code>CLIENT_SECRET</code></td><td>Local development only; on CF these live in the BTP Destination.</td></tr>
+<tr><td><code>HANA_HOST</code>, <code>HANA_PORT</code>, <code>HANA_USER</code>, <code>HANA_PASSWORD</code>, <code>HANA_SCHEMA</code>, <code>HANA_CAP_SCHEMA</code></td><td>Local development; on CF these come from the HANA binding.</td></tr>
+<tr><td><code>S3_BUCKET</code>, <code>S3_ENDPOINT_URL</code>, <code>AWS_ACCESS_KEY_ID</code>, <code>AWS_SECRET_ACCESS_KEY</code>, <code>AWS_REGION</code></td><td>Local development; on CF from the Object Store binding.</td></tr>
+<tr><td><code>PORT</code></td><td>Set by CF.</td></tr>
+</table>
+<div class="note">The Azure AD client id and secret are stored in the BTP destination <code>BTP-CP_MS_Graph</code> (type HTTP, URL <code>https://graph.microsoft.com</code>, OAuth2ClientCredentials, scope <code>https://graph.microsoft.com/.default</code>, token URL <code>https://login.microsoftonline.com/&lt;tenant-id&gt;/oauth2/v2.0/token</code>). Don't <code>cf set-env</code> them. If the secret expires in Azure AD, that destination is where you update it. Find out now who owns the Azure app registration and when its secret expires, and write it down for your successor.</div>
+
+<h2 id="deploy">10. Deploy &amp; operate</h2>
+<h3>Deploy</h3>
+<pre><code>cf login -a https://api.cf.ap10.hana.ondemand.com      # org atcp-sap-ai-delivery-workbench, space SAP_AI_Workbench
+cd cf8/push
+cf push                       # reads manifest.yml (1536M mem, 4096M disk, 1 instance, python_buildpack)
+cf logs sharepoint-rag-api --recent
+curl https://&lt;app-url&gt;/health</code></pre>
+<p>The health check is HTTP <code>/health</code> with a 120 s invocation timeout and a 180 s start timeout. First start is slow because torch and the model are large — don't mistake it for a failure.</p>
+<h3>Common operations</h3>
+<table>
+<tr><th>Task</th><th>How</th></tr>
+<tr><td>Check status</td><td><code>cf app sharepoint-rag-api</code>, <code>GET /health</code>, <code>GET /db/tables</code>, <code>GET /analysis/db</code></td></tr>
+<tr><td>Restart</td><td><code>cf restart sharepoint-rag-api</code> (re-reads env; <code>/tmp</code> is wiped)</td></tr>
+<tr><td>Change a flag</td><td><code>cf set-env sharepoint-rag-api ENABLE_DESTRUCTIVE true</code>, then <code>cf restage</code>. <strong>Set it back to false afterwards.</strong></td></tr>
+<tr><td>Ingest new SharePoint content</td><td><code>GET /vectorize</code> or <code>/vectorize/folder/{path}</code>; unchanged files are skipped automatically.</td></tr>
+<tr><td>Ingest from S3 with tags</td><td><code>POST /vectorize/s3</code> with the prefix; tags are parsed from the key.</td></tr>
+<tr><td>Back up</td><td><code>POST /db/backup</code> (writes to S3). Take one before any destructive or table-set change.</td></tr>
+<tr><td>Read logs / run reports</td><td><code>cf logs</code>, <code>/analysis</code>, <code>/analysis/latest</code></td></tr>
+</table>
+<h3>Switching table sets (the safe order)</h3>
+<ol>
+<li>Confirm the HDI tables exist: <code>GET /db/tables</code>.</li>
+<li>Set <code>BRAIN_WRITE_SET=both</code>; restage; run normal vectorize calls.</li>
+<li>Run <code>POST /db/backfill</code> (or <code>python migrate_brain_data.py copy</code>) for pre-existing rows, then <code>verify</code>.</li>
+<li>When counts match, set <code>BRAIN_READ_SET=hdi</code>; later narrow the write set.</li>
+<li>Don't drop the legacy tables until the HDI set has lived in production for a good while.</li>
+</ol>
+
+<h2 id="local">11. Local development</h2>
+<pre><code>python -m venv .venv &amp;&amp; .venv\Scripts\activate
+pip install -r requirements.txt
+# .env (git-ignored): TENANT_ID, CLIENT_ID, CLIENT_SECRET, HANA_*, S3_*, API_SECRET_KEY
+python api.py            # http://localhost:8000/docs</code></pre>
+<p>HANA credentials resolve from <code>VCAP_SERVICES</code> first, then <code>HANA_*</code> env vars. Direct HANA access from a laptop may be blocked by the firewall (this was the case from the Accenture network); use the deployed API instead. On Windows, <code>api.py</code> switches asyncio to the Selector event loop policy.</p>
+
+<h2 id="tests">12. Testing &amp; migration scripts</h2>
+<pre><code>python test_vectorize_s3.py tables                      # both sets present? row counts
+BRAIN_WRITE_SET=both python test_vectorize_s3.py roundtrip   # synthetic tagged fixture, read back filtered, cleans up
+BRAIN_WRITE_SET=both python test_vectorize_s3.py vectorize --prefix knowledge-base/
+python test_vectorize_s3.py findings --deliverable B10  # per-deliverable retrieval check
+
+python migrate_brain_data.py plan     # read-only
+python migrate_brain_data.py copy     # safe to re-run; skips existing rows
+python migrate_brain_data.py verify   # exit 0 only if all counts equal</code></pre>
+<p>There is no automated unit-test suite or CI; these scripts are the checks, and they need real HANA access.</p>
+
+<h2 id="mydb">13. myDB side project</h2>
+<p>Separate from this repo, in <code>C:\Users\mark.vergel.ramirez\Desktop\Projects\myDB</code>: a local copy of the HDI BRAIN tables is being loaded into a home-grown database (myDB) through <code>/admin/export/{table}</code>, using <code>load_from_api.py</code> (needs <code>API_KEY</code> in myDB's <code>.env</code>). Hand this over only if someone wants it; nothing in production depends on it.</p>
+<table>
+<tr><th>Table</th><th>Status (2026-10-23)</th></tr>
+<tr><td>SP_FILES, TEXT_CHUNKS, FILE_REGISTRY, SP_FILES_VERSIONS</td><td>Loaded (2,332 / 16,641 / 1,166 / 1,259 rows).</td></tr>
+<tr><td>FILES_CHUNK</td><td>Partial: about 77,500 of roughly 200,000 rows. A resume loader appends from the current row count. Throughput is under 1 row/s on the myDB insert side (the API itself answers in 3–5 s per 100 rows), so a full load would take days. Needs insert profiling or batching before it is practical.</td></tr>
+</table>
+<p>Constraints learned: the export must be read single-threaded (even 2 parallel workers cause HANA 500s); FILES_CHUNK rows are about 10.9 KB each; offset-based paging assumes the API returns a stable row order, which has not been verified.</p>
+
+<h2 id="issues">14. Known issues &amp; open items</h2>
+<ul>
+<li><strong>Chunking quality</strong> (from <code>RAG_API_SPEC.md</code> §11): token counts are character-approximate (chars/4); no overlap between chunks; no metadata inside chunks; embedding is not batched (one <code>encode()</code> call per chunk, slow on big runs); vectors are not stamped with model name or version, so a model change cannot be detected from the data. The earlier "chunk exceeds model window" gap is resolved.</li>
+<li><strong>Single instance, ephemeral disk.</strong> One CF instance with <code>/tmp</code> storage; run artifacts and the model cache vanish on restart (artifacts are mirrored to S3).</li>
+<li><strong>Auth is all-or-nothing.</strong> One shared API key (or none, if the variable is unset), CORS open to all origins, and the MCP routes use the same key.</li>
+<li><strong>Startup tolerance.</strong> If SharePoint init fails the app still starts and returns 503 on SharePoint routes until it recovers; check <code>GET /health</code>.</li>
+<li><strong>Two repos coupled.</strong> HDI table definitions live in <code>BTP-Catalyst-Platform</code>. Schema changes need changes in both.</li>
+<li><strong>Legacy tables</strong> are still present and unmerged; decide when to retire them.</li>
+<li><strong>Housekeeping.</strong> <code>server_new.err</code>/<code>server_new.out</code> are untracked leftovers in the repo. <code>session_log.md</code> is tracked in git but is a personal log and could be removed.</li>
+<li><strong>Not verified in this write-up:</strong> exact HANA column definitions beyond the spec, current Azure secret expiry, who holds Space Developer rights, and whether <code>API_SECRET_KEY</code> is currently set on the live app (the live API returned 404 for <code>/</code> and 200 for <code>/docs</code>, <code>/openapi.json</code> and <code>/health</code> without a key).</li>
+</ul>
+
+<h2 id="history">15. Recent history</h2>
+<table>
+<tr><th>Date</th><th>Change</th></tr>
+<tr><td>2026-10-19</td><td>Word extraction improved (table cells, XML fallback); <code>.gitignore</code> additions.</td></tr>
+<tr><td>2026-10-07</td><td>Skip upserts for unchanged files, chunks and raw chunk records.</td></tr>
+<tr><td>2026-10-02</td><td><code>/admin/export/{table}</code> added for the myDB migration.</td></tr>
+<tr><td>2026-10-01</td><td>Stack moved to <code>cflinuxfs5</code>; MCP tools for SharePoint list/search and pipeline.</td></tr>
+<tr><td>2026-09-30</td><td>MCP server added (renamed <code>mcp.py</code> → <code>mcp_server.py</code>, pinned <code>mcp&lt;2</code>); S/4 publish and test tools.</td></tr>
+<tr><td>2026-09-29</td><td>API-key authentication on all endpoints; hidden key generator.</td></tr>
+<tr><td>2026-09-25</td><td>Layer-aware BTP-Brain retrieval: taxonomy parser, <code>client_name</code>, HDI cutover.</td></tr>
+<tr><td>2026-09-20</td><td><code>/db/vectors</code> and <code>/db/sql</code> added; drop/truncate restored behind <code>ENABLE_DESTRUCTIVE</code>.</td></tr>
+<tr><td>2026-09-10</td><td>Data-loss incident from Python DDL in the HDI container — the reason for the "no DDL on HDI tables" rule.</td></tr>
+</table>
+<p class="sub">Full history: <code>git log</code> (32 commits).</p>
+
+</main>
+</div>
+</body>
+</html>
