@@ -17,6 +17,7 @@ from urllib3.util.retry import Retry
 from requests.adapters import HTTPAdapter
 from dotenv import load_dotenv
 from docx import Document
+from docx.oxml.ns import qn
 import openpyxl
 import pdfplumber
 from pptx import Presentation
@@ -1315,6 +1316,82 @@ def _rebuild_file(chunks: list, save_dir: str = None) -> bytes:
 
 # ── RAG: text extraction, chunking, vectorization ────────────────────────────
 
+def _docx_heading_level(paragraph) -> int:
+    """Heading level 1-6 from the paragraph's style ("Heading N" / "Title") or outline level; 0 = body text."""
+    import re
+    style = paragraph.style
+    while style is not None:
+        name = (style.name or "").strip().lower()
+        if name == "title":
+            return 1
+        m = re.match(r"heading\s*(\d)", name)
+        if m:
+            return min(int(m.group(1)), 6)
+        style = style.base_style
+    ppr = paragraph._p.pPr
+    lvl = ppr.find(qn("w:outlineLvl")) if ppr is not None else None
+    if lvl is not None:
+        try:
+            return min(int(lvl.get(qn("w:val"))) + 1, 6)
+        except (TypeError, ValueError):
+            pass
+    return 0
+
+
+def _docx_table_lines(table) -> list:
+    """A table as markdown pipe rows: first row is the header; merged cells are listed once per row."""
+    rows = []
+    for row in table.rows:
+        cells = []
+        prev = None
+        for cell in row.cells:
+            if prev is not None and cell._tc is prev:
+                continue  # horizontally merged — python-docx repeats the same cell
+            prev = cell._tc
+            cells.append(" ".join(cell.text.split()).replace("|", "/"))
+        if any(cells):
+            rows.append(cells)
+    if not rows:
+        return []
+    width = max(len(r) for r in rows)
+    out = []
+    for i, cells in enumerate(rows):
+        out.append("| " + " | ".join(cells + [""] * (width - len(cells))) + " |")
+        if i == 0:
+            out.append("|" + "---|" * width)
+    return out
+
+
+def _docx_body_lines(doc) -> list:
+    """Text of a .docx body in document order: headings as '#' lines, tables in place as pipe rows,
+    content controls (w:sdt, e.g. DLIS/RICEFW cover fields) included."""
+    from docx.table import Table
+    from docx.text.paragraph import Paragraph
+    lines = []
+
+    def walk(parent):
+        for child in parent.iterchildren():
+            if child.tag == qn("w:p"):
+                para = Paragraph(child, doc)
+                text = para.text.strip()
+                if text:
+                    level = _docx_heading_level(para)
+                    lines.append(f"{'#' * level} {text}" if level else text)
+            elif child.tag == qn("w:tbl"):
+                table_lines = _docx_table_lines(Table(child, doc))
+                if table_lines:
+                    lines.append("")
+                    lines.extend(table_lines)
+                    lines.append("")
+            elif child.tag == qn("w:sdt"):
+                content = child.find(qn("w:sdtContent"))
+                if content is not None:
+                    walk(content)
+
+    walk(doc.element.body)
+    return lines
+
+
 def _extract_text(content: bytes, filename: str) -> str:
     log.info(f"Extracting text from {filename}")
     ext = filename.rsplit(".", 1)[-1].lower()
@@ -1324,18 +1401,9 @@ def _extract_text(content: bytes, filename: str) -> str:
             import zipfile
             from lxml import etree
             doc = Document(io.BytesIO(content))
-            lines = []
-            # Top-level paragraphs
-            for p in doc.paragraphs:
-                if p.text.strip():
-                    lines.append(p.text)
-            # Table cells (templates like RICEFW are table-heavy)
-            for table in doc.tables:
-                for row in table.rows:
-                    for cell in row.cells:
-                        cell_text = cell.text.strip()
-                        if cell_text and cell_text not in lines:
-                            lines.append(cell_text)
+            # Body in document order, headings as markdown "#" lines and tables as pipe rows in
+            # place, so a client template keeps its outline and each table stays in its section.
+            lines = _docx_body_lines(doc)
             # Fallback: raw XML w:t extraction for content controls (SDT) and other structures
             # that python-docx high-level API does not expose (e.g. DLIS/RICEFW templates)
             if not lines:
